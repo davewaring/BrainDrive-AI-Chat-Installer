@@ -42,6 +42,45 @@ pub enum IncomingMessage {
     #[serde(rename = "check_port")]
     CheckPort { id: String, port: u16 },
 
+    #[serde(rename = "clone_repo")]
+    CloneRepo {
+        id: String,
+        #[serde(default)]
+        repo_url: Option<String>,
+        #[serde(default)]
+        target_path: Option<String>,
+    },
+
+    #[serde(rename = "create_conda_env")]
+    CreateCondaEnv {
+        id: String,
+        #[serde(default)]
+        env_name: Option<String>,
+    },
+
+    #[serde(rename = "install_backend_deps")]
+    InstallBackendDeps {
+        id: String,
+        #[serde(default)]
+        env_name: Option<String>,
+        #[serde(default)]
+        repo_path: Option<String>,
+    },
+
+    #[serde(rename = "install_frontend_deps")]
+    InstallFrontendDeps {
+        id: String,
+        #[serde(default)]
+        repo_path: Option<String>,
+    },
+
+    #[serde(rename = "setup_env_file")]
+    SetupEnvFile {
+        id: String,
+        #[serde(default)]
+        repo_path: Option<String>,
+    },
+
     #[serde(rename = "start_braindrive")]
     StartBraindrive {
         id: String,
@@ -237,6 +276,44 @@ async fn handle_incoming_message(
 
         IncomingMessage::CheckPort { id, port } => {
             let result = dispatcher::check_port(port).await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::CloneRepo {
+            id,
+            repo_url,
+            target_path,
+        } => {
+            app.emit("command-executing", "Cloning BrainDrive repository").ok();
+            let result = dispatcher::clone_repo(repo_url, target_path).await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::CreateCondaEnv { id, env_name } => {
+            app.emit("command-executing", "Creating Conda environment").ok();
+            let result = dispatcher::create_conda_env(env_name).await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::InstallBackendDeps {
+            id,
+            env_name,
+            repo_path,
+        } => {
+            app.emit("command-executing", "Installing backend dependencies").ok();
+            let result = dispatcher::install_backend_deps(env_name, repo_path).await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::InstallFrontendDeps { id, repo_path } => {
+            app.emit("command-executing", "Installing frontend dependencies").ok();
+            let result = dispatcher::install_frontend_deps(repo_path).await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::SetupEnvFile { id, repo_path } => {
+            app.emit("command-executing", "Setting up environment file").ok();
+            let result = dispatcher::setup_env_file(repo_path).await;
             send_tool_result(sender, id, result).await;
         }
 

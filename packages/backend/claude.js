@@ -12,36 +12,75 @@ const SYSTEM_PROMPT = `You are the BrainDrive Installation Assistant, a friendly
 
 ## Your Capabilities
 You can interact with the user's computer through a local bootstrapper app. You have access to tools that let you:
-- Detect what software is installed on their system
-- Run commands to install dependencies
-- Start, stop, and restart BrainDrive
-- Check if ports are available
+- Detect system information (OS, installed software, hardware)
+- Clone the BrainDrive repository from GitHub
+- Create and manage conda environments
+- Install Python and npm dependencies
+- Configure environment files
+- Start, stop, and restart BrainDrive services
+- Check port availability
 
 ## Installation Flow
-1. First, greet the user warmly
-2. Explain what BrainDrive is and what the installer does
-3. Ask them to download the bootstrapper app (they'll see a download button)
-4. Once the bootstrapper connects, detect their system to understand what's already installed
-5. Guide them through installing any missing dependencies (conda, git, node)
-6. Clone the BrainDrive repository
-7. Set up the environment and install dependencies
-8. Start BrainDrive and celebrate!
+Follow this sequence once the bootstrapper is connected:
+
+1. **Detect System** - Use \`detect_system\` to check what's installed
+   - Look for: conda, git, node, ollama
+   - Note: OS, architecture, available memory
+
+2. **Clone Repository** - Use \`clone_repo\` to download BrainDrive
+   - Clones to ~/BrainDrive by default
+   - Uses shallow clone for speed
+
+3. **Create Conda Environment** - Use \`create_conda_env\`
+   - Creates "BrainDriveDev" environment
+   - Includes Python 3.11, Node.js, and git
+
+4. **Install Backend Dependencies** - Use \`install_backend_deps\`
+   - Installs Python packages from requirements.txt
+   - Runs in the conda environment
+
+5. **Install Frontend Dependencies** - Use \`install_frontend_deps\`
+   - Runs npm install in the frontend directory
+
+6. **Setup Environment File** - Use \`setup_env_file\`
+   - Copies .env-dev to .env
+
+7. **Start BrainDrive** - Use \`start_braindrive\`
+   - Starts backend on port 8005
+   - Starts frontend on port 5173
+
+8. **Celebrate!** - Open BrainDrive in browser
+
+## Pre-Bootstrapper Flow
+If the bootstrapper is NOT connected:
+1. Greet the user warmly
+2. Explain BrainDrive briefly (AI-powered personal productivity platform)
+3. Explain you need them to download a small helper app
+4. They'll see a download button - guide them to click it
+5. Once downloaded, they should open it
+6. Wait for connection, then proceed with installation
 
 ## Important Guidelines
-- If the bootstrapper is not connected, you can still chat! Explain the process and guide them to download it.
-- Always explain what you're about to do BEFORE doing it
-- After each major step, confirm it succeeded before moving on
-- If a command fails, explain what went wrong in simple terms
-- Never run destructive commands without explicit user confirmation
-- Keep the user informed during long-running operations
+- Always use \`check_connection\` first if unsure about bootstrapper status
+- Explain what each step does BEFORE running the tool
+- Wait for confirmation on major steps (cloning, creating env)
+- If a step fails, explain what went wrong simply and offer solutions
+- Long operations (clone, npm install) may take a minute - reassure the user
+- If something already exists (repo, env), that's fine - move to next step
+
+## Error Recovery
+- If conda not installed: Ask user to install from https://docs.conda.io/en/latest/miniconda.html
+- If git not installed: Ask user to install from https://git-scm.com/downloads
+- If port in use: Use \`check_port_available\` and suggest alternatives
+- If clone fails: Check internet connection, try again
 
 ## Conversation Style
-- Use short paragraphs and bullet points for clarity
-- Add occasional encouraging messages during waits
-- If the user seems confused, offer to explain in more detail
-- Be honest about any limitations or issues
+- Short paragraphs and bullet points
+- Occasional encouragement during waits: "This might take a minute - BrainDrive has some powerful features!"
+- Be honest about issues
+- Celebrate completion enthusiastically!
 
-Remember: Your goal is to make the installation process feel easy and even enjoyable. The user should feel supported every step of the way.`;
+Remember: Your goal is to make installation feel effortless. The user should feel guided every step of the way.`;
 
 export class ClaudeClient {
   constructor(session, hub) {
@@ -248,6 +287,82 @@ export class ClaudeClient {
             port: input.port,
           }, 10000);
           return portResult.data || portResult;
+
+        case 'clone_repo': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          const payload = {};
+          if (input.repo_url) {
+            // Basic URL validation
+            if (!input.repo_url.startsWith('https://') && !input.repo_url.startsWith('git@')) {
+              return { error: 'Repository URL must start with https:// or git@' };
+            }
+            payload.repo_url = input.repo_url;
+          }
+          if (input.target_path) {
+            payload.target_path = input.target_path;
+          }
+          const cloneResult = await this.hub.callBootstrapperTool('clone_repo', payload, 300000);
+          return cloneResult.data || cloneResult;
+        }
+
+        case 'create_conda_env': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          const payload = {};
+          if (input.env_name) {
+            if (!/^[A-Za-z0-9_-]+$/.test(input.env_name)) {
+              return { error: 'Environment name may only include letters, numbers, "-", and "_"' };
+            }
+            payload.env_name = input.env_name;
+          }
+          const createEnvResult = await this.hub.callBootstrapperTool('create_conda_env', payload, 300000);
+          return createEnvResult.data || createEnvResult;
+        }
+
+        case 'install_backend_deps': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          const payload = {};
+          if (input.env_name) {
+            if (!/^[A-Za-z0-9_-]+$/.test(input.env_name)) {
+              return { error: 'Environment name may only include letters, numbers, "-", and "_"' };
+            }
+            payload.env_name = input.env_name;
+          }
+          if (input.repo_path) {
+            payload.repo_path = input.repo_path;
+          }
+          const backendDepsResult = await this.hub.callBootstrapperTool('install_backend_deps', payload, 600000);
+          return backendDepsResult.data || backendDepsResult;
+        }
+
+        case 'install_frontend_deps': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          const payload = {};
+          if (input.repo_path) {
+            payload.repo_path = input.repo_path;
+          }
+          const frontendDepsResult = await this.hub.callBootstrapperTool('install_frontend_deps', payload, 300000);
+          return frontendDepsResult.data || frontendDepsResult;
+        }
+
+        case 'setup_env_file': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          const payload = {};
+          if (input.repo_path) {
+            payload.repo_path = input.repo_path;
+          }
+          const envFileResult = await this.hub.callBootstrapperTool('setup_env_file', payload, 10000);
+          return envFileResult.data || envFileResult;
+        }
 
         case 'start_braindrive':
           if (!this.hub.isBootstrapperConnected()) {

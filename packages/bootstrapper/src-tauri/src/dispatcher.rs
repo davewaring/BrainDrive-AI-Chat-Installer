@@ -127,6 +127,240 @@ pub async fn pull_ollama_model(
     }))
 }
 
+/// Clone the BrainDrive repository
+pub async fn clone_repo(repo_url: Option<String>, target_path: Option<String>) -> Result<Value, String> {
+    ensure_command_available("git")?;
+
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let target = match target_path {
+        Some(p) => {
+            let path = PathBuf::from(&p);
+            // Ensure target is inside home directory
+            if !path.starts_with(&home) && !p.starts_with("~/") {
+                return Err("Target path must be inside your home directory".to_string());
+            }
+            if p.starts_with("~/") {
+                home.join(&p[2..])
+            } else {
+                path
+            }
+        }
+        None => home.join(DEFAULT_REPO_DIR),
+    };
+
+    // Check if already exists
+    if target.exists() {
+        if target.join(".git").exists() {
+            return Ok(json!({
+                "success": true,
+                "message": "BrainDrive repository already exists",
+                "path": target.to_string_lossy(),
+                "already_exists": true
+            }));
+        } else {
+            return Err(format!(
+                "Directory {} exists but is not a git repository",
+                target.display()
+            ));
+        }
+    }
+
+    // Default to BrainDrive-Core repo
+    let url = repo_url.unwrap_or_else(|| "https://github.com/BrainDriveAI/BrainDrive.git".to_string());
+
+    // Validate URL format (basic check)
+    if !url.starts_with("https://") && !url.starts_with("git@") {
+        return Err("Repository URL must start with https:// or git@".to_string());
+    }
+
+    let mut command = Command::new("git");
+    command
+        .arg("clone")
+        .arg("--depth")
+        .arg("1")  // Shallow clone for faster download
+        .arg(&url)
+        .arg(&target);
+
+    let result = run_command(command).await?;
+
+    Ok(json!({
+        "success": result.success,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "path": target.to_string_lossy(),
+        "url": url
+    }))
+}
+
+/// Install backend Python dependencies using pip in conda environment
+pub async fn install_backend_deps(
+    env_name: Option<String>,
+    repo_path: Option<String>,
+) -> Result<Value, String> {
+    ensure_command_available("conda")?;
+
+    let env = sanitize_env_name(&env_name.unwrap_or_else(|| CONDA_ENV_NAME.to_string()))?;
+    let repo = resolve_repo_path_or_default(repo_path)?;
+    let backend_path = repo.join("backend");
+    let requirements_file = backend_path.join("requirements.txt");
+
+    if !backend_path.exists() {
+        return Err(format!(
+            "Backend directory not found at {}",
+            backend_path.display()
+        ));
+    }
+
+    if !requirements_file.exists() {
+        return Err(format!(
+            "requirements.txt not found at {}",
+            requirements_file.display()
+        ));
+    }
+
+    // Build the pip install command to run in conda environment
+    let pip_cmd = format!(
+        "pip install -r \"{}\"",
+        requirements_file.display()
+    );
+    let full_cmd = process_manager::conda_run_command(&env, &pip_cmd);
+
+    let result = run_shell_script(&full_cmd).await?;
+
+    Ok(json!({
+        "success": result.success,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "env_name": env,
+        "requirements_file": requirements_file.to_string_lossy()
+    }))
+}
+
+/// Install frontend npm dependencies
+pub async fn install_frontend_deps(repo_path: Option<String>) -> Result<Value, String> {
+    ensure_command_available("npm")?;
+
+    let repo = resolve_repo_path_or_default(repo_path)?;
+    let frontend_path = repo.join("frontend");
+
+    if !frontend_path.exists() {
+        return Err(format!(
+            "Frontend directory not found at {}",
+            frontend_path.display()
+        ));
+    }
+
+    let package_json = frontend_path.join("package.json");
+    if !package_json.exists() {
+        return Err(format!(
+            "package.json not found at {}",
+            package_json.display()
+        ));
+    }
+
+    let mut command = Command::new("npm");
+    command
+        .arg("install")
+        .current_dir(&frontend_path);
+
+    let result = run_command(command).await?;
+
+    Ok(json!({
+        "success": result.success,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "frontend_path": frontend_path.to_string_lossy()
+    }))
+}
+
+/// Setup the environment file by copying .env-dev to .env
+pub async fn setup_env_file(repo_path: Option<String>) -> Result<Value, String> {
+    let repo = resolve_repo_path_or_default(repo_path)?;
+    let backend_path = repo.join("backend");
+    let env_dev = backend_path.join(".env-dev");
+    let env_file = backend_path.join(".env");
+
+    if !env_dev.exists() {
+        return Err(format!(
+            ".env-dev not found at {}. The repository may not be properly cloned.",
+            env_dev.display()
+        ));
+    }
+
+    // Check if .env already exists
+    if env_file.exists() {
+        return Ok(json!({
+            "success": true,
+            "message": ".env file already exists",
+            "path": env_file.to_string_lossy(),
+            "already_exists": true
+        }));
+    }
+
+    // Copy .env-dev to .env
+    std::fs::copy(&env_dev, &env_file)
+        .map_err(|e| format!("Failed to copy .env-dev to .env: {}", e))?;
+
+    Ok(json!({
+        "success": true,
+        "message": "Environment file created",
+        "source": env_dev.to_string_lossy(),
+        "destination": env_file.to_string_lossy()
+    }))
+}
+
+/// Create a new conda environment for BrainDrive
+pub async fn create_conda_env(env_name: Option<String>) -> Result<Value, String> {
+    ensure_command_available("conda")?;
+
+    let env = sanitize_env_name(&env_name.unwrap_or_else(|| CONDA_ENV_NAME.to_string()))?;
+
+    // Check if environment already exists
+    let check_cmd = Command::new("conda")
+        .args(["env", "list"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("Failed to list conda environments: {}", e))?;
+
+    let env_list = String::from_utf8_lossy(&check_cmd.stdout);
+    if env_list.lines().any(|line| line.split_whitespace().next() == Some(&env)) {
+        return Ok(json!({
+            "success": true,
+            "message": format!("Conda environment '{}' already exists", env),
+            "env_name": env,
+            "already_exists": true
+        }));
+    }
+
+    // Create the environment with Python 3.11, nodejs, and git
+    let mut command = Command::new("conda");
+    command
+        .args([
+            "create",
+            "-n", &env,
+            "-c", "conda-forge",
+            "python=3.11",
+            "nodejs",
+            "git",
+            "-y"
+        ]);
+
+    let result = run_command(command).await?;
+
+    Ok(json!({
+        "success": result.success,
+        "exit_code": result.exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "env_name": env
+    }))
+}
+
 /// Start BrainDrive services with proper process management
 pub async fn start_braindrive(
     frontend_port: u16,
@@ -559,6 +793,40 @@ fn resolve_repo_path(input: Option<String>) -> Result<PathBuf, String> {
     }
 
     Ok(canonical)
+}
+
+/// Resolve repo path, returning default if not specified.
+/// Unlike resolve_repo_path, this expects the path to exist and validates it.
+fn resolve_repo_path_or_default(input: Option<String>) -> Result<PathBuf, String> {
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let base = match input {
+        Some(path) => {
+            let p = PathBuf::from(&path);
+            if path.starts_with("~/") {
+                home.join(&path[2..])
+            } else {
+                p
+            }
+        }
+        None => home.join(DEFAULT_REPO_DIR),
+    };
+
+    // Try to canonicalize if it exists
+    let resolved = if base.exists() {
+        base.canonicalize().unwrap_or(base)
+    } else {
+        return Err(format!(
+            "Repository path '{}' does not exist. Please clone the repository first.",
+            base.display()
+        ));
+    };
+
+    // Security: ensure path is inside home directory
+    if !resolved.starts_with(&home) {
+        return Err("Repository path must be inside your home directory".to_string());
+    }
+
+    Ok(resolved)
 }
 
 fn resolve_environment_file(repo: &Path, environment_file: Option<String>) -> Result<PathBuf, String> {

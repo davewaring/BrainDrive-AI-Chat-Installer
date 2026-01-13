@@ -85,6 +85,84 @@ export const TOOLS = [
     },
   },
   {
+    name: 'clone_repo',
+    description: 'Clone the BrainDrive repository from GitHub. This should be done early in the installation process. Uses shallow clone for faster download.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        repo_url: {
+          type: 'string',
+          description: 'Repository URL (defaults to https://github.com/BrainDriveAI/BrainDrive.git)',
+        },
+        target_path: {
+          type: 'string',
+          description: 'Where to clone the repo (defaults to ~/BrainDrive)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'create_conda_env',
+    description: 'Create a new conda environment with Python 3.11, Node.js, and git. Use this before installing dependencies.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        env_name: {
+          type: 'string',
+          description: 'Name for the conda environment (defaults to BrainDriveDev)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'install_backend_deps',
+    description: 'Install Python backend dependencies using pip in the conda environment. Run this after creating the conda env and cloning the repo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        env_name: {
+          type: 'string',
+          description: 'Conda environment name (defaults to BrainDriveDev)',
+        },
+        repo_path: {
+          type: 'string',
+          description: 'Path to the BrainDrive repo (defaults to ~/BrainDrive)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'install_frontend_deps',
+    description: 'Install frontend npm dependencies. Run this after cloning the repo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        repo_path: {
+          type: 'string',
+          description: 'Path to the BrainDrive repo (defaults to ~/BrainDrive)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'setup_env_file',
+    description: 'Set up the backend .env configuration file by copying .env-dev to .env. Run this before starting BrainDrive.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        repo_path: {
+          type: 'string',
+          description: 'Path to the BrainDrive repo (defaults to ~/BrainDrive)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'start_braindrive',
     description: 'Start the BrainDrive backend and frontend services. Use this after installation is complete.',
     input_schema: {
