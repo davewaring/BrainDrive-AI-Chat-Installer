@@ -102,71 +102,35 @@ export class ClaudeClient {
       messages: this.session.getConversationHistory(),
     });
 
-    const assistantContent = [];
-    const toolCalls = [];
-    let currentTextBlock = null;
-    let currentToolBlock = null;
+    let streamingStarted = false;
+    let fullText = '';
 
-    // Process stream events
-    stream.on('contentBlockStart', (event) => {
-      if (event.content_block.type === 'text') {
-        currentTextBlock = { type: 'text', text: '' };
-        // Signal start of new message chunk
-        this.hub.sendToBrowser({
-          type: 'ai_message_start',
-        });
-      } else if (event.content_block.type === 'tool_use') {
-        currentToolBlock = {
-          type: 'tool_use',
-          id: event.content_block.id,
-          name: event.content_block.name,
-          input: '',
-        };
+    // Stream text to browser as it arrives
+    stream.on('text', (text) => {
+      if (!streamingStarted) {
+        streamingStarted = true;
+        this.hub.sendToBrowser({ type: 'ai_message_start' });
       }
-    });
-
-    stream.on('contentBlockDelta', (event) => {
-      if (event.delta.type === 'text_delta' && currentTextBlock) {
-        currentTextBlock.text += event.delta.text;
-        // Stream text to browser immediately
-        this.hub.sendToBrowser({
-          type: 'ai_message_delta',
-          content: event.delta.text,
-        });
-      } else if (event.delta.type === 'input_json_delta' && currentToolBlock) {
-        currentToolBlock.input += event.delta.partial_json;
-      }
-    });
-
-    stream.on('contentBlockStop', () => {
-      if (currentTextBlock) {
-        assistantContent.push(currentTextBlock);
-        // Signal end of text block
-        this.hub.sendToBrowser({
-          type: 'ai_message_end',
-        });
-        currentTextBlock = null;
-      }
-      if (currentToolBlock) {
-        // Parse the accumulated JSON input
-        try {
-          currentToolBlock.input = JSON.parse(currentToolBlock.input || '{}');
-        } catch {
-          currentToolBlock.input = {};
-        }
-        toolCalls.push(currentToolBlock);
-        assistantContent.push(currentToolBlock);
-        currentToolBlock = null;
-      }
+      fullText += text;
+      this.hub.sendToBrowser({
+        type: 'ai_message_delta',
+        content: text,
+      });
     });
 
     // Wait for stream to complete
     const finalMessage = await stream.finalMessage();
 
-    // Add assistant response to history
-    this.session.addMessage('assistant', assistantContent);
+    // Signal end of text if we streamed any
+    if (streamingStarted) {
+      this.hub.sendToBrowser({ type: 'ai_message_end' });
+    }
 
-    // Execute tool calls if any
+    // Add assistant response to history
+    this.session.addMessage('assistant', finalMessage.content);
+
+    // Check for tool calls in the final message
+    const toolCalls = finalMessage.content.filter(block => block.type === 'tool_use');
     if (toolCalls.length > 0) {
       await this._executeToolsAndContinue(toolCalls);
     }
