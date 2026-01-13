@@ -1,0 +1,23 @@
+{
+  "name": "braindrive-ai-chat-installer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chat-based AI installer for BrainDrive",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=packages/backend",
+    "dev:web": "npm run dev --workspace=packages/web",
+    "dev:bootstrapper": "npm run tauri dev --workspace=packages/bootstrapper",
+    "build:backend": "npm run build --workspace=packages/backend",
+    "build:web": "npm run build --workspace=packages/web",
+    "build:bootstrapper": "npm run tauri build --workspace=packages/bootstrapper"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/davewaring/BrainDrive-AI-Chat-Installer.git"
+  },
+  "author": "BrainDrive",
+  "license": "MIT"
+}

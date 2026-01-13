@@ -1,0 +1,32 @@
+[package]
+name = "braindrive-bootstrapper"
+version = "0.1.0"
+description = "BrainDrive AI Chat Installer Bootstrapper"
+authors = ["BrainDrive"]
+edition = "2021"
+
+[lib]
+name = "braindrive_bootstrapper_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures-util = "0.3"
+url = "2"
+hostname = "0.3"
+dirs = "5"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
