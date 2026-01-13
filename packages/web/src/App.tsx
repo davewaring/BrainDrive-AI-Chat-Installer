@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 
 interface Message {
@@ -11,6 +11,18 @@ interface Message {
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 
+type ServerMessage =
+  | { type: 'status_update'; bootstrapper_connected: boolean }
+  | { type: 'ai_message'; content: string }
+  | { type: 'ai_message_start' }
+  | { type: 'ai_message_delta'; content: string }
+  | { type: 'ai_message_end' }
+  | { type: 'ai_typing'; typing: boolean }
+  | { type: 'tool_executing'; tool: string }
+  | { type: 'command_output'; output: string }
+  | { type: 'error'; message: string }
+  | { type: string; [key: string]: unknown };
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -20,6 +32,8 @@ function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
+  const messageIdRef = useRef(0);
+  const reconnectRef = useRef<() => void>(() => {});
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -29,16 +43,107 @@ function App() {
     scrollToBottom();
   }, [messages]);
 
-  useEffect(() => {
-    connectToBackend();
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
+  const createMessageId = useCallback(() => {
+    messageIdRef.current += 1;
+    return `msg-${messageIdRef.current}`;
   }, []);
 
-  const connectToBackend = () => {
+  const addMessage = useCallback((role: 'user' | 'assistant' | 'system', content: string) => {
+    const id = createMessageId();
+    setMessages(prev => [
+      ...prev,
+      {
+        id,
+        role,
+        content,
+        timestamp: new Date(),
+      },
+    ]);
+  }, [createMessageId]);
+
+  const handleServerMessage = useCallback((data: ServerMessage) => {
+    switch (data.type) {
+      case 'status_update': {
+        const connected = Boolean(data.bootstrapper_connected);
+        setBootstrapperConnected(connected);
+        if (connected) {
+          addMessage('system', 'Bootstrapper connected! You can now start the installation.');
+        }
+        break;
+      }
+
+      case 'ai_message': {
+        addMessage('assistant', String(data.content ?? ''));
+        break;
+      }
+
+      case 'ai_message_start': {
+        const newId = createMessageId();
+        streamingMessageIdRef.current = newId;
+        setMessages(prev => [
+          ...prev,
+          {
+            id: newId,
+            role: 'assistant',
+            content: '',
+            timestamp: new Date(),
+            isStreaming: true,
+          },
+        ]);
+        setIsTyping(false);
+        break;
+      }
+
+      case 'ai_message_delta': {
+        if (streamingMessageIdRef.current) {
+          setMessages(prev => prev.map(msg =>
+            msg.id === streamingMessageIdRef.current
+              ? { ...msg, content: `${msg.content}${data.content ?? ''}` }
+              : msg
+          ));
+        }
+        break;
+      }
+
+      case 'ai_message_end': {
+        if (streamingMessageIdRef.current) {
+          const currentId = streamingMessageIdRef.current;
+          setMessages(prev => prev.map(msg =>
+            msg.id === currentId
+              ? { ...msg, isStreaming: false }
+              : msg
+          ));
+          streamingMessageIdRef.current = null;
+        }
+        break;
+      }
+
+      case 'ai_typing': {
+        setIsTyping(Boolean(data.typing));
+        break;
+      }
+
+      case 'tool_executing': {
+        addMessage('system', `Running: ${String(data.tool ?? 'helper')}`);
+        break;
+      }
+
+      case 'command_output': {
+        console.log('Command output:', data.output);
+        break;
+      }
+
+      case 'error': {
+        addMessage('system', `Error: ${String(data.message ?? 'Unknown error')}`);
+        break;
+      }
+
+      default:
+        break;
+    }
+  }, [addMessage, createMessageId]);
+
+  const connectToBackend = useCallback(() => {
     setConnectionStatus('connecting');
 
     const ws = new WebSocket('ws://localhost:3000');
@@ -47,15 +152,13 @@ function App() {
     ws.onopen = () => {
       setConnectionStatus('connected');
       ws.send(JSON.stringify({ type: 'browser_connect' }));
-
-      // Add welcome message - user can chat immediately
       addMessage('system', 'Connected to BrainDrive Installation Server. You can start chatting now!');
     };
 
     ws.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
-        handleServerMessage(data);
+        const parsed = JSON.parse(event.data) as ServerMessage;
+        handleServerMessage(parsed);
       } catch (err) {
         console.error('Failed to parse message:', err);
       }
@@ -65,94 +168,27 @@ function App() {
       setConnectionStatus('disconnected');
       setBootstrapperConnected(false);
       addMessage('system', 'Disconnected from server. Reconnecting...');
-
-      // Attempt to reconnect after 3 seconds
-      setTimeout(connectToBackend, 3000);
+      setTimeout(() => reconnectRef.current(), 3000);
     };
 
     ws.onerror = (err) => {
       console.error('WebSocket error:', err);
     };
-  };
+  }, [addMessage, handleServerMessage]);
 
-  const handleServerMessage = (data: any) => {
-    switch (data.type) {
-      case 'status_update':
-        setBootstrapperConnected(data.bootstrapper_connected);
-        if (data.bootstrapper_connected) {
-          addMessage('system', 'Bootstrapper connected! You can now start the installation.');
-        }
-        break;
+  useEffect(() => {
+    reconnectRef.current = connectToBackend;
+  }, [connectToBackend]);
 
-      case 'ai_message':
-        // Legacy: full message at once (fallback)
-        addMessage('assistant', data.content);
-        break;
-
-      case 'ai_message_start':
-        // Start of a new streaming message
-        const newId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        streamingMessageIdRef.current = newId;
-        setMessages(prev => [...prev, {
-          id: newId,
-          role: 'assistant',
-          content: '',
-          timestamp: new Date(),
-          isStreaming: true,
-        }]);
-        setIsTyping(false); // Hide typing indicator when text starts
-        break;
-
-      case 'ai_message_delta':
-        // Streaming text chunk
-        if (streamingMessageIdRef.current) {
-          setMessages(prev => prev.map(msg =>
-            msg.id === streamingMessageIdRef.current
-              ? { ...msg, content: msg.content + data.content }
-              : msg
-          ));
-        }
-        break;
-
-      case 'ai_message_end':
-        // End of streaming message
-        if (streamingMessageIdRef.current) {
-          setMessages(prev => prev.map(msg =>
-            msg.id === streamingMessageIdRef.current
-              ? { ...msg, isStreaming: false }
-              : msg
-          ));
-          streamingMessageIdRef.current = null;
-        }
-        break;
-
-      case 'ai_typing':
-        setIsTyping(data.typing);
-        break;
-
-      case 'tool_executing':
-        addMessage('system', `Running: ${data.tool}`);
-        break;
-
-      case 'command_output':
-        // Could show in a separate panel or append to messages
-        console.log('Command output:', data.output);
-        break;
-
-      case 'error':
-        addMessage('system', `Error: ${data.message}`);
-        break;
-    }
-  };
-
-  const addMessage = (role: 'user' | 'assistant' | 'system', content: string) => {
-    setMessages(prev => [...prev, {
-      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      role,
-      content,
-      timestamp: new Date(),
-    }]);
-  };
+  useEffect(() => {
+    const timer = window.setTimeout(() => connectToBackend(), 0);
+    return () => {
+      window.clearTimeout(timer);
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [connectToBackend]);
 
   const sendMessage = () => {
     if (!input.trim() || !wsRef.current || connectionStatus !== 'connected') {

@@ -18,17 +18,56 @@ export const TOOLS = [
     },
   },
   {
-    name: 'run_command',
-    description: 'Execute a shell command on the user\'s system. Use this for installation tasks like cloning repos, installing dependencies, etc. Always explain what the command does before running it.',
+    name: 'install_conda_env',
+    description: 'Create or update the audited BrainDrive conda environment. Provide the environment name and optionally a repo path/environment.yml override.',
     input_schema: {
       type: 'object',
       properties: {
-        command: {
+        env_name: {
           type: 'string',
-          description: 'The shell command to execute',
+          description: 'The target conda environment name (letters, numbers, -, _)',
+        },
+        repo_path: {
+          type: 'string',
+          description: 'Absolute path to the BrainDrive repo (defaults to ~/BrainDrive)',
+        },
+        environment_file: {
+          type: 'string',
+          description: 'Relative path to the environment file inside the repo (defaults to environment.yml)',
         },
       },
-      required: ['command'],
+      required: ['env_name'],
+    },
+  },
+  {
+    name: 'install_ollama',
+    description: 'Install Ollama using the vetted installer script. Use only after the user confirms.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'pull_ollama_model',
+    description: 'Download an audited Ollama model (e.g., qwen2.5:1.5b).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        model: {
+          type: 'string',
+          description: 'Model identifier to pull (letters, numbers, dots, :, /, -, _)',
+        },
+        registry: {
+          type: 'string',
+          description: 'Optional custom registry host to prefix before the model name',
+        },
+        force: {
+          type: 'boolean',
+          description: 'Force re-download even if cached locally',
+        },
+      },
+      required: ['model'],
     },
   },
   {

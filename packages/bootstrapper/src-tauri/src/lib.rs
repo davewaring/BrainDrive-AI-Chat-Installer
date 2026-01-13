@@ -37,6 +37,13 @@ pub struct ConnectionStatus {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GpuInfo {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vram_gb: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SystemInfo {
     os: String,
     arch: String,
@@ -47,6 +54,18 @@ pub struct SystemInfo {
     node_installed: bool,
     ollama_installed: bool,
     braindrive_exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cpu_brand: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cpu_physical_cores: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cpu_logical_cores: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_gb: Option<f64>,
+    #[serde(default)]
+    gpus: Vec<GpuInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disk_free_gb: Option<f64>,
 }
 
 // Tauri commands

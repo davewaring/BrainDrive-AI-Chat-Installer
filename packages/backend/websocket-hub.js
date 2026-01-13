@@ -71,7 +71,7 @@ export class WebSocketHub {
 
   /**
    * Call a tool on the bootstrapper and wait for response
-   * @param {string} type - Tool type (e.g., 'detect_system', 'run_command')
+   * @param {string} type - Tool type (e.g., 'detect_system', 'install_conda_env')
    * @param {object} params - Tool parameters
    * @param {number} timeoutMs - Timeout in milliseconds
    * @returns {Promise<object>} - Tool result

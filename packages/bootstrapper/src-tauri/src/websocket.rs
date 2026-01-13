@@ -15,8 +15,28 @@ pub enum IncomingMessage {
     #[serde(rename = "detect_system")]
     DetectSystem { id: String },
 
-    #[serde(rename = "run_command")]
-    RunCommand { id: String, command: String },
+    #[serde(rename = "install_conda_env")]
+    InstallCondaEnv {
+        id: String,
+        env_name: String,
+        #[serde(default)]
+        repo_path: Option<String>,
+        #[serde(default)]
+        environment_file: Option<String>,
+    },
+
+    #[serde(rename = "install_ollama")]
+    InstallOllama { id: String },
+
+    #[serde(rename = "pull_ollama_model")]
+    PullOllamaModel {
+        id: String,
+        model: String,
+        #[serde(default)]
+        registry: Option<String>,
+        #[serde(default)]
+        force: Option<bool>,
+    },
 
     #[serde(rename = "check_port")]
     CheckPort { id: String, port: u16 },
@@ -180,10 +200,33 @@ async fn handle_incoming_message(
             send_tool_result(sender, id, result).await;
         }
 
-        IncomingMessage::RunCommand { id, command } => {
-            // Emit to UI that we're running a command
-            app.emit("command-executing", command.clone()).ok();
-            let result = dispatcher::run_command(&command).await;
+        IncomingMessage::InstallCondaEnv {
+            id,
+            env_name,
+            repo_path,
+            environment_file,
+        } => {
+            app.emit("command-executing", format!("Installing Conda env {}", env_name))
+                .ok();
+            let result = dispatcher::install_conda_env(&env_name, repo_path, environment_file).await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::InstallOllama { id } => {
+            app.emit("command-executing", "Installing Ollama").ok();
+            let result = dispatcher::install_ollama().await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::PullOllamaModel {
+            id,
+            model,
+            registry,
+            force,
+        } => {
+            app.emit("command-executing", format!("Pulling model {}", model))
+                .ok();
+            let result = dispatcher::pull_ollama_model(&model, registry, force.unwrap_or(false)).await;
             send_tool_result(sender, id, result).await;
         }
 

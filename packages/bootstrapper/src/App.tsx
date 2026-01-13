@@ -3,6 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import './App.css';
 
+interface GpuInfo {
+  name: string;
+  vram_gb?: number;
+}
+
 interface SystemInfo {
   os: string;
   arch: string;
@@ -13,6 +18,12 @@ interface SystemInfo {
   node_installed: boolean;
   ollama_installed: boolean;
   braindrive_exists: boolean;
+  cpu_brand?: string;
+  cpu_physical_cores?: number;
+  cpu_logical_cores?: number;
+  memory_gb?: number;
+  disk_free_gb?: number;
+  gpus?: GpuInfo[];
 }
 
 interface ConnectionStatus {
@@ -136,6 +147,10 @@ function App() {
     }
   };
 
+  const formatNumber = (value: number, digits = 1) => {
+    return Number(value).toFixed(digits);
+  };
+
   return (
     <div className="container">
       <header className="header">
@@ -193,6 +208,36 @@ function App() {
               <span className="info-label">OS</span>
               <span className="info-value">{systemInfo.os} ({systemInfo.arch})</span>
             </div>
+            {systemInfo.cpu_brand && (
+              <div className="info-item">
+                <span className="info-label">CPU</span>
+                <span className="info-value">
+                  {systemInfo.cpu_brand}
+                  {systemInfo.cpu_physical_cores && (
+                    <> · {systemInfo.cpu_physical_cores} cores</>
+                  )}
+                  {systemInfo.cpu_logical_cores && (
+                    <> ({systemInfo.cpu_logical_cores} threads)</>
+                  )}
+                </span>
+              </div>
+            )}
+            {systemInfo.memory_gb && (
+              <div className="info-item">
+                <span className="info-label">Memory</span>
+                <span className="info-value">
+                  {formatNumber(systemInfo.memory_gb, 1)} GB
+                </span>
+              </div>
+            )}
+            {systemInfo.disk_free_gb && (
+              <div className="info-item">
+                <span className="info-label">Disk Free</span>
+                <span className="info-value">
+                  {formatNumber(systemInfo.disk_free_gb, 1)} GB
+                </span>
+              </div>
+            )}
             <div className="info-item">
               <span className="info-label">Git</span>
               <span className={`info-value ${systemInfo.git_installed ? 'installed' : 'missing'}`}>
@@ -224,6 +269,21 @@ function App() {
               </span>
             </div>
           </div>
+          {systemInfo.gpus && systemInfo.gpus.length > 0 && (
+            <div className="gpu-list">
+              <span className="info-label">GPU</span>
+              <ul>
+                {systemInfo.gpus.map((gpu, index) => (
+                  <li key={`${gpu.name}-${index}`}>
+                    {gpu.name}
+                    {typeof gpu.vram_gb === 'number' && (
+                      <> · {formatNumber(gpu.vram_gb, 1)} GB VRAM</>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
 

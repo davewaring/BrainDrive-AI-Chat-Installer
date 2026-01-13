@@ -185,17 +185,60 @@ export class ClaudeClient {
           }
           return { error: systemInfo.error || 'Failed to detect system' };
 
-        case 'run_command':
+        case 'install_conda_env': {
           if (!this.hub.isBootstrapperConnected()) {
             return { error: 'Bootstrapper not connected' };
           }
-          const result = await this.hub.callBootstrapperTool('run_command', {
-            command: input.command,
-          }, 300000); // 5 minute timeout for commands
-          if (result.success !== undefined) {
-            return result.data || result;
+          const envName = (input.env_name || '').trim();
+          if (!/^[A-Za-z0-9_-]+$/.test(envName)) {
+            return { error: 'Environment name may only include letters, numbers, "-", and "_"' };
           }
-          return result;
+
+          const payload = {
+            env_name: envName,
+          };
+
+          if (input.repo_path) {
+            payload.repo_path = input.repo_path;
+          }
+
+          if (input.environment_file) {
+            payload.environment_file = input.environment_file;
+          }
+
+          const condaResult = await this.hub.callBootstrapperTool('install_conda_env', payload, 300000);
+          return condaResult.data || condaResult;
+        }
+
+        case 'install_ollama': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          const ollamaResult = await this.hub.callBootstrapperTool('install_ollama', {}, 600000);
+          return ollamaResult.data || ollamaResult;
+        }
+
+        case 'pull_ollama_model': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          const model = (input.model || '').trim();
+          if (!/^[A-Za-z0-9._:+/-]+$/.test(model)) {
+            return { error: 'Model names may only include letters, numbers, ".", "_", "-", "/", and ":"' };
+          }
+
+          const payload = {
+            model,
+            force: Boolean(input.force),
+          };
+
+          if (input.registry) {
+            payload.registry = input.registry;
+          }
+
+          const modelResult = await this.hub.callBootstrapperTool('pull_ollama_model', payload, 600000);
+          return modelResult.data || modelResult;
+        }
 
         case 'check_port_available':
           if (!this.hub.isBootstrapperConnected()) {
