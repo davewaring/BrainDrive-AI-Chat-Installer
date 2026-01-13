@@ -6,6 +6,7 @@ interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
+  isStreaming?: boolean;
 }
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
@@ -18,6 +19,7 @@ function App() {
   const [isTyping, setIsTyping] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const streamingMessageIdRef = useRef<string | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -46,8 +48,8 @@ function App() {
       setConnectionStatus('connected');
       ws.send(JSON.stringify({ type: 'browser_connect' }));
 
-      // Add welcome message
-      addMessage('system', 'Connected to BrainDrive Installation Server. Waiting for bootstrapper...');
+      // Add welcome message - user can chat immediately
+      addMessage('system', 'Connected to BrainDrive Installation Server. You can start chatting now!');
     };
 
     ws.onmessage = (event) => {
@@ -83,7 +85,45 @@ function App() {
         break;
 
       case 'ai_message':
+        // Legacy: full message at once (fallback)
         addMessage('assistant', data.content);
+        break;
+
+      case 'ai_message_start':
+        // Start of a new streaming message
+        const newId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        streamingMessageIdRef.current = newId;
+        setMessages(prev => [...prev, {
+          id: newId,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date(),
+          isStreaming: true,
+        }]);
+        setIsTyping(false); // Hide typing indicator when text starts
+        break;
+
+      case 'ai_message_delta':
+        // Streaming text chunk
+        if (streamingMessageIdRef.current) {
+          setMessages(prev => prev.map(msg =>
+            msg.id === streamingMessageIdRef.current
+              ? { ...msg, content: msg.content + data.content }
+              : msg
+          ));
+        }
+        break;
+
+      case 'ai_message_end':
+        // End of streaming message
+        if (streamingMessageIdRef.current) {
+          setMessages(prev => prev.map(msg =>
+            msg.id === streamingMessageIdRef.current
+              ? { ...msg, isStreaming: false }
+              : msg
+          ));
+          streamingMessageIdRef.current = null;
+        }
         break;
 
       case 'ai_typing':
@@ -207,13 +247,13 @@ function App() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder={bootstrapperConnected ? "Type a message..." : "Waiting for bootstrapper..."}
-            disabled={!bootstrapperConnected}
+            placeholder={connectionStatus === 'connected' ? "Type a message..." : "Connecting to server..."}
+            disabled={connectionStatus !== 'connected'}
             rows={1}
           />
           <button
             onClick={sendMessage}
-            disabled={!input.trim() || !bootstrapperConnected}
+            disabled={!input.trim() || connectionStatus !== 'connected'}
             className="send-btn"
           >
             Send

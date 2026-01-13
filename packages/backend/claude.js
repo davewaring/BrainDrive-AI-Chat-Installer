@@ -18,14 +18,17 @@ You can interact with the user's computer through a local bootstrapper app. You 
 - Check if ports are available
 
 ## Installation Flow
-1. First, greet the user and check if the bootstrapper is connected
-2. Once connected, detect their system to understand what's already installed
-3. Guide them through installing any missing dependencies (conda, git, node)
-4. Clone the BrainDrive repository
-5. Set up the environment and install dependencies
-6. Start BrainDrive and celebrate!
+1. First, greet the user warmly
+2. Explain what BrainDrive is and what the installer does
+3. Ask them to download the bootstrapper app (they'll see a download button)
+4. Once the bootstrapper connects, detect their system to understand what's already installed
+5. Guide them through installing any missing dependencies (conda, git, node)
+6. Clone the BrainDrive repository
+7. Set up the environment and install dependencies
+8. Start BrainDrive and celebrate!
 
 ## Important Guidelines
+- If the bootstrapper is not connected, you can still chat! Explain the process and guide them to download it.
 - Always explain what you're about to do BEFORE doing it
 - After each major step, confirm it succeeded before moving on
 - If a command fails, explain what went wrong in simple terms
@@ -76,17 +79,8 @@ export class ClaudeClient {
       // Send typing indicator
       this.hub.sendToBrowser({ type: 'ai_typing', typing: true });
 
-      // Call Claude API
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 4096,
-        system: SYSTEM_PROMPT,
-        tools: TOOLS,
-        messages: this.session.getConversationHistory(),
-      });
-
-      // Process the response
-      await this._handleResponse(response);
+      // Call Claude API with streaming
+      await this._streamResponse();
 
     } catch (error) {
       console.error('Claude API error:', error);
@@ -99,63 +93,109 @@ export class ClaudeClient {
     }
   }
 
-  async _handleResponse(response) {
+  async _streamResponse() {
+    const stream = this.client.messages.stream({
+      model: this.model,
+      max_tokens: 4096,
+      system: SYSTEM_PROMPT,
+      tools: TOOLS,
+      messages: this.session.getConversationHistory(),
+    });
+
     const assistantContent = [];
     const toolCalls = [];
+    let currentTextBlock = null;
+    let currentToolBlock = null;
 
-    // Process each content block
-    for (const block of response.content) {
-      if (block.type === 'text') {
-        // Send text to browser immediately
+    // Process stream events
+    stream.on('contentBlockStart', (event) => {
+      if (event.content_block.type === 'text') {
+        currentTextBlock = { type: 'text', text: '' };
+        // Signal start of new message chunk
         this.hub.sendToBrowser({
-          type: 'ai_message',
-          content: block.text,
+          type: 'ai_message_start',
         });
-        assistantContent.push(block);
-      } else if (block.type === 'tool_use') {
-        toolCalls.push(block);
-        assistantContent.push(block);
-
-        // Notify browser about tool execution
-        this.hub.sendToBrowser({
-          type: 'tool_executing',
-          tool: block.name,
-          input: block.input,
-        });
+      } else if (event.content_block.type === 'tool_use') {
+        currentToolBlock = {
+          type: 'tool_use',
+          id: event.content_block.id,
+          name: event.content_block.name,
+          input: '',
+        };
       }
-    }
+    });
+
+    stream.on('contentBlockDelta', (event) => {
+      if (event.delta.type === 'text_delta' && currentTextBlock) {
+        currentTextBlock.text += event.delta.text;
+        // Stream text to browser immediately
+        this.hub.sendToBrowser({
+          type: 'ai_message_delta',
+          content: event.delta.text,
+        });
+      } else if (event.delta.type === 'input_json_delta' && currentToolBlock) {
+        currentToolBlock.input += event.delta.partial_json;
+      }
+    });
+
+    stream.on('contentBlockStop', () => {
+      if (currentTextBlock) {
+        assistantContent.push(currentTextBlock);
+        // Signal end of text block
+        this.hub.sendToBrowser({
+          type: 'ai_message_end',
+        });
+        currentTextBlock = null;
+      }
+      if (currentToolBlock) {
+        // Parse the accumulated JSON input
+        try {
+          currentToolBlock.input = JSON.parse(currentToolBlock.input || '{}');
+        } catch {
+          currentToolBlock.input = {};
+        }
+        toolCalls.push(currentToolBlock);
+        assistantContent.push(currentToolBlock);
+        currentToolBlock = null;
+      }
+    });
+
+    // Wait for stream to complete
+    const finalMessage = await stream.finalMessage();
 
     // Add assistant response to history
     this.session.addMessage('assistant', assistantContent);
 
     // Execute tool calls if any
     if (toolCalls.length > 0) {
-      const toolResults = [];
+      await this._executeToolsAndContinue(toolCalls);
+    }
+  }
 
-      for (const tool of toolCalls) {
-        const result = await this._executeTool(tool);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: tool.id,
-          content: JSON.stringify(result),
-        });
-      }
+  async _executeToolsAndContinue(toolCalls) {
+    const toolResults = [];
 
-      // Add tool results to history
-      this.session.addMessage('user', toolResults);
-
-      // Continue conversation with tool results
-      const followUp = await this.client.messages.create({
-        model: this.model,
-        max_tokens: 4096,
-        system: SYSTEM_PROMPT,
-        tools: TOOLS,
-        messages: this.session.getConversationHistory(),
+    for (const tool of toolCalls) {
+      // Notify browser about tool execution
+      this.hub.sendToBrowser({
+        type: 'tool_executing',
+        tool: tool.name,
+        input: tool.input,
       });
 
-      // Recursively handle follow-up (may contain more tool calls)
-      await this._handleResponse(followUp);
+      const result = await this._executeTool(tool);
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: tool.id,
+        content: JSON.stringify(result),
+      });
     }
+
+    // Add tool results to history
+    this.session.addMessage('user', toolResults);
+
+    // Continue conversation with streaming
+    await this._streamResponse();
   }
 
   async _executeTool(tool) {
@@ -172,11 +212,14 @@ export class ClaudeClient {
 
         case 'detect_system':
           if (!this.hub.isBootstrapperConnected()) {
-            return { error: 'Bootstrapper not connected' };
+            return { error: 'Bootstrapper not connected. Please ask the user to download and open the bootstrapper app.' };
           }
           const systemInfo = await this.hub.callBootstrapperTool('detect_system', {}, 30000);
-          this.session.setSystemInfo(systemInfo.data);
-          return systemInfo.data;
+          if (systemInfo.success && systemInfo.data) {
+            this.session.setSystemInfo(systemInfo.data);
+            return systemInfo.data;
+          }
+          return { error: systemInfo.error || 'Failed to detect system' };
 
         case 'run_command':
           if (!this.hub.isBootstrapperConnected()) {
@@ -185,15 +228,19 @@ export class ClaudeClient {
           const result = await this.hub.callBootstrapperTool('run_command', {
             command: input.command,
           }, 300000); // 5 minute timeout for commands
+          if (result.success !== undefined) {
+            return result.data || result;
+          }
           return result;
 
         case 'check_port_available':
           if (!this.hub.isBootstrapperConnected()) {
             return { error: 'Bootstrapper not connected' };
           }
-          return await this.hub.callBootstrapperTool('check_port', {
+          const portResult = await this.hub.callBootstrapperTool('check_port', {
             port: input.port,
           }, 10000);
+          return portResult.data || portResult;
 
         case 'start_braindrive':
           if (!this.hub.isBootstrapperConnected()) {
@@ -206,7 +253,7 @@ export class ClaudeClient {
           if (startResult.success) {
             this.session.setBraindriveStatus('running');
           }
-          return startResult;
+          return startResult.data || startResult;
 
         case 'stop_braindrive':
           if (!this.hub.isBootstrapperConnected()) {
@@ -216,13 +263,14 @@ export class ClaudeClient {
           if (stopResult.success) {
             this.session.setBraindriveStatus('stopped');
           }
-          return stopResult;
+          return stopResult.data || stopResult;
 
         case 'restart_braindrive':
           if (!this.hub.isBootstrapperConnected()) {
             return { error: 'Bootstrapper not connected' };
           }
-          return await this.hub.callBootstrapperTool('restart_braindrive', {}, 60000);
+          const restartResult = await this.hub.callBootstrapperTool('restart_braindrive', {}, 60000);
+          return restartResult.data || restartResult;
 
         default:
           return { error: `Unknown tool: ${name}` };

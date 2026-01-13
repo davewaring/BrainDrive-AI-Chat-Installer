@@ -2,14 +2,22 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex;
+use futures_util::stream::SplitSink;
+use tokio_tungstenite::{tungstenite::Message, WebSocketStream, MaybeTlsStream};
+use tokio::net::TcpStream;
 
 mod websocket;
 mod system_info;
+mod dispatcher;
+
+// Type alias for the WebSocket sender
+pub type WsSender = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
 // Application state
 pub struct AppState {
     ws_connected: Arc<Mutex<bool>>,
     backend_url: Arc<Mutex<String>>,
+    ws_sender: Arc<Mutex<Option<WsSender>>>,
 }
 
 impl Default for AppState {
@@ -17,6 +25,7 @@ impl Default for AppState {
         Self {
             ws_connected: Arc::new(Mutex::new(false)),
             backend_url: Arc::new(Mutex::new("ws://localhost:3000/ws".to_string())),
+            ws_sender: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -62,7 +71,12 @@ async fn connect_to_backend(
         None => state.backend_url.lock().await.clone(),
     };
 
-    websocket::connect(app, state.ws_connected.clone(), &backend_url).await
+    websocket::connect(
+        app,
+        state.ws_connected.clone(),
+        state.ws_sender.clone(),
+        &backend_url,
+    ).await
 }
 
 #[tauri::command]
