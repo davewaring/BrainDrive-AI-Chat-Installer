@@ -75,30 +75,67 @@ pub async fn check_port(port: u16) -> Result<Value, String> {
 }
 
 /// Start BrainDrive services
-///
-/// TODO: Implement actual BrainDrive start logic in Phase 2
 pub async fn start_braindrive(frontend_port: u16, backend_port: u16) -> Result<Value, String> {
-    // Check if BrainDrive directory exists
-    let braindrive_path = dirs::home_dir()
-        .ok_or("Could not determine home directory")?
-        .join("BrainDrive");
+    let home_dir = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let braindrive_path = home_dir.join("BrainDrive");
 
     if !braindrive_path.exists() {
         return Err("BrainDrive is not installed. Please install it first.".to_string());
     }
 
-    // For Phase 1, return a mock success
-    // Phase 2 will implement actual process spawning
     eprintln!(
         "Starting BrainDrive on ports: frontend={}, backend={}",
         frontend_port, backend_port
     );
 
+    // Start backend using conda run
+    let backend_path = braindrive_path.join("backend");
+    let backend_cmd = format!(
+        "cd {} && conda run -n BrainDriveDev uvicorn main:app --host 0.0.0.0 --port {} &",
+        backend_path.display(),
+        backend_port
+    );
+
+    let backend_result = Command::new("sh")
+        .arg("-c")
+        .arg(&backend_cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = backend_result {
+        return Err(format!("Failed to start backend: {}", e));
+    }
+
+    // Give backend a moment to start
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    // Start frontend
+    let frontend_path = braindrive_path.join("frontend");
+    let frontend_cmd = format!(
+        "cd {} && npm run dev -- --host localhost --port {} &",
+        frontend_path.display(),
+        frontend_port
+    );
+
+    let frontend_result = Command::new("sh")
+        .arg("-c")
+        .arg(&frontend_cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = frontend_result {
+        return Err(format!("Failed to start frontend: {}", e));
+    }
+
     Ok(json!({
         "success": true,
-        "message": "BrainDrive start initiated",
+        "message": "BrainDrive services started",
         "frontend_port": frontend_port,
-        "backend_port": backend_port
+        "backend_port": backend_port,
+        "frontend_url": format!("http://localhost:{}", frontend_port),
+        "backend_url": format!("http://localhost:{}", backend_port)
     }))
 }
 
