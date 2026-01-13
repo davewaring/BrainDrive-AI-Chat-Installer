@@ -169,10 +169,18 @@ pub fn kill_process_on_port(port: u16) -> bool {
     }
 }
 
-/// Check if a port has a listening process
+/// Check if a port has a listening process that is accepting connections
 pub fn is_port_in_use(port: u16) -> bool {
-    use std::net::TcpListener;
-    TcpListener::bind(format!("127.0.0.1:{}", port)).is_err()
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    // Try to connect to the port - this confirms something is actually listening
+    // and ready to accept connections (more reliable than trying to bind)
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port)
+        .parse()
+        .expect("Valid address");
+
+    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
 }
 
 /// Wait for a service to start listening on a port
