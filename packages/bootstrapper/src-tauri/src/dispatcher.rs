@@ -361,7 +361,27 @@ pub async fn create_conda_env(env_name: Option<String>) -> Result<Value, String>
     }))
 }
 
+// Port fallback options
+const BACKEND_PORTS: [u16; 3] = [8005, 8006, 8007];
+const FRONTEND_PORTS: [u16; 3] = [5173, 5174, 5175];
+
+/// Find an available port from a list of options
+fn find_available_port(preferred: u16, fallbacks: &[u16]) -> Option<u16> {
+    // Try preferred first
+    if !is_port_in_use(preferred) {
+        return Some(preferred);
+    }
+    // Try fallbacks
+    for &port in fallbacks {
+        if !is_port_in_use(port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 /// Start BrainDrive services with proper process management
+/// This function is idempotent - if services are already running, it returns success
 pub async fn start_braindrive(
     frontend_port: u16,
     backend_port: u16,
@@ -370,20 +390,6 @@ pub async fn start_braindrive(
     let repo_path = resolve_repo_path(None)?;
     if !repo_path.exists() {
         return Err("BrainDrive is not installed. Please install it first.".to_string());
-    }
-
-    // Check if services are already running on these ports
-    if is_port_in_use(backend_port) {
-        return Err(format!(
-            "Port {} is already in use. Please stop the existing service or choose a different port.",
-            backend_port
-        ));
-    }
-    if is_port_in_use(frontend_port) {
-        return Err(format!(
-            "Port {} is already in use. Please stop the existing service or choose a different port.",
-            frontend_port
-        ));
     }
 
     let backend_path = repo_path.join("backend");
@@ -403,32 +409,99 @@ pub async fn start_braindrive(
         ));
     }
 
-    // Start backend using a wrapper script approach for conda environment
-    let backend_pid = start_backend_service(&backend_path, backend_port).await?;
+    // Check current state - maybe services are already running
+    let current_state = {
+        let state = process_state.lock().await;
+        state.clone()
+    };
 
-    // Wait for backend to start (with timeout)
-    if !wait_for_port(backend_port, 30).await {
-        // Backend didn't start, try to clean up
-        if let Some(pid) = backend_pid {
-            kill_process(pid);
+    let mut backend_already_running = false;
+    let mut frontend_already_running = false;
+    let mut actual_backend_port = backend_port;
+    let mut actual_frontend_port = frontend_port;
+    let mut backend_pid: Option<u32> = None;
+    let mut frontend_pid: Option<u32> = None;
+
+    // Check if backend is already running (from our tracking or port detection)
+    if let Some(ref backend) = current_state.backend {
+        if backend.running && is_port_in_use(backend.port) {
+            backend_already_running = true;
+            actual_backend_port = backend.port;
+            backend_pid = backend.pid;
         }
-        return Err("Backend failed to start within 30 seconds. Check the logs for details.".to_string());
     }
 
-    // Start frontend
-    let frontend_pid = start_frontend_service(&frontend_path, frontend_port).await?;
+    // Check if frontend is already running
+    if let Some(ref frontend) = current_state.frontend {
+        if frontend.running && is_port_in_use(frontend.port) {
+            frontend_already_running = true;
+            actual_frontend_port = frontend.port;
+            frontend_pid = frontend.pid;
+        }
+    }
 
-    // Wait for frontend to start (with timeout)
-    if !wait_for_port(frontend_port, 30).await {
-        // Frontend didn't start, clean up both services
-        if let Some(pid) = frontend_pid {
-            kill_process(pid);
+    // If both already running, return success immediately (idempotent)
+    if backend_already_running && frontend_already_running {
+        return Ok(json!({
+            "success": true,
+            "message": "BrainDrive is already running",
+            "already_running": true,
+            "frontend_port": actual_frontend_port,
+            "backend_port": actual_backend_port,
+            "frontend_url": format!("http://localhost:{}", actual_frontend_port),
+            "backend_url": format!("http://localhost:{}", actual_backend_port)
+        }));
+    }
+
+    // Start backend if not running
+    if !backend_already_running {
+        // Find available port (try preferred, then fallbacks)
+        actual_backend_port = find_available_port(backend_port, &BACKEND_PORTS)
+            .ok_or_else(|| format!(
+                "No available backend ports. Tried: {}, {:?}",
+                backend_port, BACKEND_PORTS
+            ))?;
+
+        backend_pid = start_backend_service(&backend_path, actual_backend_port).await?;
+
+        // Wait for backend to start (with timeout)
+        if !wait_for_port(actual_backend_port, 45).await {
+            if let Some(pid) = backend_pid {
+                kill_process(pid);
+            }
+            return Err("Backend failed to start within 45 seconds. Check ~/.braindrive-installer/logs/ for details.".to_string());
         }
-        if let Some(pid) = backend_pid {
-            kill_process(pid);
+    }
+
+    // Start frontend if not running
+    if !frontend_already_running {
+        // Find available port (try preferred, then fallbacks)
+        actual_frontend_port = find_available_port(frontend_port, &FRONTEND_PORTS)
+            .ok_or_else(|| format!(
+                "No available frontend ports. Tried: {}, {:?}",
+                frontend_port, FRONTEND_PORTS
+            ))?;
+
+        frontend_pid = start_frontend_service(&frontend_path, actual_frontend_port).await?;
+
+        // Wait for frontend to start (with timeout)
+        // Note: We don't kill backend if frontend fails - backend is still useful
+        if !wait_for_port(actual_frontend_port, 45).await {
+            if let Some(pid) = frontend_pid {
+                kill_process(pid);
+            }
+            // Backend is still running, report partial success
+            return Ok(json!({
+                "success": false,
+                "partial": true,
+                "message": "Backend started but frontend failed to start within 45 seconds",
+                "backend_port": actual_backend_port,
+                "backend_url": format!("http://localhost:{}", actual_backend_port),
+                "backend_running": true,
+                "frontend_running": false,
+                "error": "Frontend startup timed out. Check ~/.braindrive-installer/logs/ for details."
+            }));
         }
-        kill_process_on_port(backend_port);
-        return Err("Frontend failed to start within 30 seconds. Check the logs for details.".to_string());
     }
 
     // Update process state
@@ -437,26 +510,40 @@ pub async fn start_braindrive(
         state.backend = Some(ServiceInfo {
             name: "backend".to_string(),
             pid: backend_pid,
-            port: backend_port,
+            port: actual_backend_port,
             running: true,
         });
         state.frontend = Some(ServiceInfo {
             name: "frontend".to_string(),
             pid: frontend_pid,
-            port: frontend_port,
+            port: actual_frontend_port,
             running: true,
         });
     }
 
+    let mut message = "BrainDrive services started successfully".to_string();
+    if backend_already_running || frontend_already_running {
+        let mut parts = vec![];
+        if backend_already_running {
+            parts.push("backend was already running");
+        }
+        if frontend_already_running {
+            parts.push("frontend was already running");
+        }
+        message = format!("BrainDrive started ({})", parts.join(", "));
+    }
+
     Ok(json!({
         "success": true,
-        "message": "BrainDrive services started successfully",
-        "frontend_port": frontend_port,
-        "backend_port": backend_port,
-        "frontend_url": format!("http://localhost:{}", frontend_port),
-        "backend_url": format!("http://localhost:{}", backend_port),
+        "message": message,
+        "frontend_port": actual_frontend_port,
+        "backend_port": actual_backend_port,
+        "frontend_url": format!("http://localhost:{}", actual_frontend_port),
+        "backend_url": format!("http://localhost:{}", actual_backend_port),
         "backend_pid": backend_pid,
-        "frontend_pid": frontend_pid
+        "frontend_pid": frontend_pid,
+        "backend_already_running": backend_already_running,
+        "frontend_already_running": frontend_already_running
     }))
 }
 
