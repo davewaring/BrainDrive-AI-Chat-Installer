@@ -1,4 +1,5 @@
 use crate::dispatcher;
+use crate::process_manager::ProcessState;
 use crate::WsSender;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -110,6 +111,7 @@ pub async fn connect(
     app: AppHandle,
     ws_connected: Arc<Mutex<bool>>,
     ws_sender: Arc<Mutex<Option<WsSender>>>,
+    process_state: ProcessState,
     url: &str,
 ) -> Result<(), String> {
     let url = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
@@ -139,6 +141,7 @@ pub async fn connect(
     let app_clone = app.clone();
     let ws_connected_clone = ws_connected.clone();
     let ws_sender_clone = ws_sender.clone();
+    let process_state_clone = process_state.clone();
 
     tokio::spawn(async move {
         while let Some(msg) = read.next().await {
@@ -154,6 +157,7 @@ pub async fn connect(
                                 incoming,
                                 &app_clone,
                                 &ws_sender_clone,
+                                &process_state_clone,
                             )
                             .await;
                         }
@@ -193,6 +197,7 @@ async fn handle_incoming_message(
     message: IncomingMessage,
     app: &AppHandle,
     sender: &Arc<Mutex<Option<WsSender>>>,
+    process_state: &ProcessState,
 ) {
     match message {
         IncomingMessage::DetectSystem { id } => {
@@ -241,19 +246,26 @@ async fn handle_incoming_message(
             backend_port,
         } => {
             app.emit("braindrive-starting", ()).ok();
-            let result = dispatcher::start_braindrive(frontend_port, backend_port).await;
+            let result = dispatcher::start_braindrive(frontend_port, backend_port, process_state).await;
             send_tool_result(sender, id, result).await;
         }
 
         IncomingMessage::StopBraindrive { id } => {
             app.emit("braindrive-stopping", ()).ok();
-            let result = dispatcher::stop_braindrive().await;
+            let result = dispatcher::stop_braindrive(process_state).await;
             send_tool_result(sender, id, result).await;
         }
 
         IncomingMessage::RestartBraindrive { id } => {
             app.emit("braindrive-restarting", ()).ok();
-            let result = dispatcher::restart_braindrive().await;
+            // Use same ports from current state or defaults
+            let (frontend_port, backend_port) = {
+                let state = process_state.lock().await;
+                let fp = state.frontend.as_ref().map(|f| f.port).unwrap_or(5173);
+                let bp = state.backend.as_ref().map(|b| b.port).unwrap_or(8005);
+                (fp, bp)
+            };
+            let result = dispatcher::restart_braindrive(frontend_port, backend_port, process_state).await;
             send_tool_result(sender, id, result).await;
         }
 

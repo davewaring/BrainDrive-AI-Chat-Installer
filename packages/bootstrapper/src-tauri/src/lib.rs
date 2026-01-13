@@ -9,6 +9,7 @@ use tokio::net::TcpStream;
 mod websocket;
 mod system_info;
 mod dispatcher;
+pub mod process_manager;
 
 // Type alias for the WebSocket sender
 pub type WsSender = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
@@ -18,6 +19,7 @@ pub struct AppState {
     ws_connected: Arc<Mutex<bool>>,
     backend_url: Arc<Mutex<String>>,
     ws_sender: Arc<Mutex<Option<WsSender>>>,
+    process_state: process_manager::ProcessState,
 }
 
 impl Default for AppState {
@@ -26,6 +28,7 @@ impl Default for AppState {
             ws_connected: Arc::new(Mutex::new(false)),
             backend_url: Arc::new(Mutex::new("ws://localhost:3000/ws".to_string())),
             ws_sender: Arc::new(Mutex::new(None)),
+            process_state: process_manager::new_process_state(),
         }
     }
 }
@@ -94,6 +97,7 @@ async fn connect_to_backend(
         app,
         state.ws_connected.clone(),
         state.ws_sender.clone(),
+        state.process_state.clone(),
         &backend_url,
     ).await
 }
@@ -110,21 +114,35 @@ async fn get_system_info() -> Result<SystemInfo, String> {
 }
 
 #[tauri::command]
-async fn start_braindrive() -> Result<String, String> {
-    // TODO: Implement BrainDrive start logic
-    Ok("BrainDrive start requested".to_string())
+async fn start_braindrive(
+    state: State<'_, AppState>,
+    frontend_port: Option<u16>,
+    backend_port: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    let fp = frontend_port.unwrap_or(5173);
+    let bp = backend_port.unwrap_or(8005);
+    dispatcher::start_braindrive(fp, bp, &state.process_state).await
 }
 
 #[tauri::command]
-async fn stop_braindrive() -> Result<String, String> {
-    // TODO: Implement BrainDrive stop logic
-    Ok("BrainDrive stop requested".to_string())
+async fn stop_braindrive(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    dispatcher::stop_braindrive(&state.process_state).await
 }
 
 #[tauri::command]
-async fn restart_braindrive() -> Result<String, String> {
-    // TODO: Implement BrainDrive restart logic
-    Ok("BrainDrive restart requested".to_string())
+async fn restart_braindrive(
+    state: State<'_, AppState>,
+    frontend_port: Option<u16>,
+    backend_port: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    let fp = frontend_port.unwrap_or(5173);
+    let bp = backend_port.unwrap_or(8005);
+    dispatcher::restart_braindrive(fp, bp, &state.process_state).await
+}
+
+#[tauri::command]
+async fn get_braindrive_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    dispatcher::get_braindrive_status(&state.process_state).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -140,6 +158,7 @@ pub fn run() {
             start_braindrive,
             stop_braindrive,
             restart_braindrive,
+            get_braindrive_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
