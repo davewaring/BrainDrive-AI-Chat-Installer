@@ -170,17 +170,28 @@ pub fn kill_process_on_port(port: u16) -> bool {
 }
 
 /// Check if a port has a listening process that is accepting connections
+/// Checks both IPv4 (127.0.0.1) and IPv6 ([::1]) localhost addresses
 pub fn is_port_in_use(port: u16) -> bool {
-    use std::net::TcpStream;
+    use std::net::{SocketAddr, TcpStream};
     use std::time::Duration;
 
-    // Try to connect to the port - this confirms something is actually listening
-    // and ready to accept connections (more reliable than trying to bind)
-    let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port)
-        .parse()
-        .expect("Valid address");
+    let timeout = Duration::from_millis(100);
 
-    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
+    // Check IPv4 localhost
+    let ipv4_addr: SocketAddr = format!("127.0.0.1:{}", port)
+        .parse()
+        .expect("Valid IPv4 address");
+
+    if TcpStream::connect_timeout(&ipv4_addr, timeout).is_ok() {
+        return true;
+    }
+
+    // Check IPv6 localhost
+    let ipv6_addr: SocketAddr = format!("[::1]:{}", port)
+        .parse()
+        .expect("Valid IPv6 address");
+
+    TcpStream::connect_timeout(&ipv6_addr, timeout).is_ok()
 }
 
 /// Wait for a service to start listening on a port
