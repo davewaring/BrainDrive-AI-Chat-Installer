@@ -16,6 +16,58 @@ const OLLAMA_KNOWN_PATHS: &[&str] = &[
     "/snap/bin/ollama",
 ];
 
+/// Known paths where Conda might be installed
+const CONDA_KNOWN_PATHS: &[&str] = &[
+    "/opt/miniconda3/bin/conda",
+    "/opt/anaconda3/bin/conda",
+    "/opt/homebrew/bin/conda",
+    "/usr/local/bin/conda",
+];
+
+/// Known paths where Node.js might be installed
+const NODE_KNOWN_PATHS: &[&str] = &[
+    "/usr/local/bin/node",
+    "/opt/homebrew/bin/node",
+    "/usr/bin/node",
+];
+
+/// Check if a binary exists at known paths or via which command
+fn check_binary_exists(known_paths: &[&str], cmd: &str) -> bool {
+    // Check known paths first
+    for path in known_paths {
+        if PathBuf::from(path).exists() {
+            return true;
+        }
+    }
+    // Fall back to which
+    check_command_exists(cmd)
+}
+
+/// Check if conda is installed (includes home directory paths)
+fn check_conda_installed() -> bool {
+    // Check system-wide paths
+    for path in CONDA_KNOWN_PATHS {
+        if PathBuf::from(path).exists() {
+            return true;
+        }
+    }
+    // Check home directory paths
+    if let Some(home) = dirs::home_dir() {
+        let home_paths = [
+            home.join("miniconda3/bin/conda"),
+            home.join("anaconda3/bin/conda"),
+            home.join(".conda/bin/conda"),
+        ];
+        for path in &home_paths {
+            if path.exists() {
+                return true;
+            }
+        }
+    }
+    // Fall back to which
+    check_command_exists("conda")
+}
+
 /// Find Ollama binary in known paths
 fn find_ollama_binary() -> Option<PathBuf> {
     for path in OLLAMA_KNOWN_PATHS {
@@ -50,9 +102,9 @@ pub async fn detect() -> Result<SystemInfo, String> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let conda_installed = check_command_exists("conda");
+    let conda_installed = check_conda_installed();
     let git_installed = check_command_exists("git");
-    let node_installed = check_command_exists("node");
+    let node_installed = check_binary_exists(NODE_KNOWN_PATHS, "node");
 
     // Use absolute path detection for Ollama (GUI apps have minimal PATH)
     let ollama_path = find_ollama_binary();
