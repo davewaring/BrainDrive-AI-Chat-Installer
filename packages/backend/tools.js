@@ -10,7 +10,7 @@ export const TOOLS = [
   },
   {
     name: 'detect_system',
-    description: 'Detect the user\'s system information including OS, architecture, and installed software (conda, git, node, ollama). Use this early in the conversation to understand what needs to be installed.',
+    description: 'Detect the user\'s system information including OS, architecture, hardware (CPU, RAM, GPU, disk), and installed software (conda, git, node, ollama). For Ollama: returns whether installed, whether running (port 11434), and version. Use this early in the conversation to understand what needs to be installed.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -41,7 +41,16 @@ export const TOOLS = [
   },
   {
     name: 'install_ollama',
-    description: 'Install Ollama using the vetted installer script. Use only after the user confirms.',
+    description: 'Check if Ollama is installed and start it if needed. If Ollama is not installed, returns manual installation instructions with download link. If installed but not running, starts the service automatically. Use this to ensure Ollama is ready before pulling models.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'start_ollama',
+    description: 'Start the Ollama service if it is installed but not running. Returns error with download link if Ollama is not installed.',
     input_schema: {
       type: 'object',
       properties: {},

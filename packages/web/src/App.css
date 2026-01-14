@@ -277,3 +277,58 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Progress Bar */
+.progress-container {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1));
+  border-radius: 0.75rem;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  animation: fadeIn 0.3s ease;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.progress-operation {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #a5b4fc;
+}
+
+.progress-percent {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #c4b5fd;
+}
+
+.progress-bar-track {
+  height: 8px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #6366f1, #8b5cf6, #a855f7);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-message {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  color: #9ca3af;
+}
+
+.progress-bytes {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: #6b7280;
+}

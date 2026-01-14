@@ -11,6 +11,15 @@ interface Message {
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 
+interface ProgressInfo {
+  id: string;
+  operation: string;
+  percent: number | null;
+  message: string;
+  bytesDownloaded: number | null;
+  bytesTotal: number | null;
+}
+
 type ServerMessage =
   | { type: 'status_update'; bootstrapper_connected: boolean }
   | { type: 'ai_message'; content: string }
@@ -20,8 +29,17 @@ type ServerMessage =
   | { type: 'ai_typing'; typing: boolean }
   | { type: 'tool_executing'; tool: string }
   | { type: 'command_output'; output: string }
+  | { type: 'progress'; id: string; operation: string; percent?: number; message: string; bytes_downloaded?: number; bytes_total?: number }
   | { type: 'error'; message: string }
   | { type: string; [key: string]: unknown };
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -29,6 +47,7 @@ function App() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [bootstrapperConnected, setBootstrapperConnected] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
+  const [activeProgress, setActiveProgress] = useState<ProgressInfo | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
@@ -130,6 +149,35 @@ function App() {
 
       case 'command_output': {
         console.log('Command output:', data.output);
+        break;
+      }
+
+      case 'progress': {
+        const progressData = data as { type: 'progress'; id: string; operation: string; percent?: number; message: string; bytes_downloaded?: number; bytes_total?: number };
+        const percent = progressData.percent ?? null;
+
+        // If progress is 100% or message indicates completion, clear progress after a short delay
+        if (percent === 100 || progressData.message.toLowerCase().includes('complete')) {
+          setActiveProgress({
+            id: progressData.id,
+            operation: progressData.operation,
+            percent: 100,
+            message: progressData.message,
+            bytesDownloaded: progressData.bytes_downloaded ?? null,
+            bytesTotal: progressData.bytes_total ?? null,
+          });
+          // Clear progress after showing completion briefly
+          setTimeout(() => setActiveProgress(null), 2000);
+        } else {
+          setActiveProgress({
+            id: progressData.id,
+            operation: progressData.operation,
+            percent,
+            message: progressData.message,
+            bytesDownloaded: progressData.bytes_downloaded ?? null,
+            bytesTotal: progressData.bytes_total ?? null,
+          });
+        }
         break;
       }
 
@@ -253,6 +301,30 @@ function App() {
       )}
 
       <main className="chat-container">
+        {activeProgress && (
+          <div className="progress-container">
+            <div className="progress-header">
+              <span className="progress-operation">
+                {activeProgress.operation === 'pull_ollama_model' ? 'Downloading Model' : activeProgress.operation}
+              </span>
+              {activeProgress.percent !== null && (
+                <span className="progress-percent">{activeProgress.percent}%</span>
+              )}
+            </div>
+            <div className="progress-bar-track">
+              <div
+                className="progress-bar-fill"
+                style={{ width: `${activeProgress.percent ?? 0}%` }}
+              />
+            </div>
+            <div className="progress-message">{activeProgress.message}</div>
+            {activeProgress.bytesDownloaded !== null && activeProgress.bytesTotal !== null && (
+              <div className="progress-bytes">
+                {formatBytes(activeProgress.bytesDownloaded)} / {formatBytes(activeProgress.bytesTotal)}
+              </div>
+            )}
+          </div>
+        )}
         <div className="messages">
           {messages.map((msg) => (
             <div key={msg.id} className={`message message-${msg.role}`}>

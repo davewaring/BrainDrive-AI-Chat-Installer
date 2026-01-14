@@ -56,6 +56,9 @@ pub struct SystemInfo {
     git_installed: bool,
     node_installed: bool,
     ollama_installed: bool,
+    ollama_running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ollama_version: Option<String>,
     braindrive_exists: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     cpu_brand: Option<String>,

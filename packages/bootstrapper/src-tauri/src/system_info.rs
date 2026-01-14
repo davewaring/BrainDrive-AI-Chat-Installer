@@ -1,8 +1,42 @@
+use crate::process_manager::is_port_in_use;
 use crate::{GpuInfo, SystemInfo};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 use sysinfo::{Disks, System};
+
+const OLLAMA_DEFAULT_PORT: u16 = 11434;
+
+/// Known paths where Ollama might be installed
+/// GUI apps often have minimal PATH, so we check absolute paths directly
+const OLLAMA_KNOWN_PATHS: &[&str] = &[
+    "/usr/local/bin/ollama",
+    "/opt/homebrew/bin/ollama",
+    "/usr/bin/ollama",
+    "/snap/bin/ollama",
+];
+
+/// Find Ollama binary in known paths
+fn find_ollama_binary() -> Option<PathBuf> {
+    for path in OLLAMA_KNOWN_PATHS {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    // Also check if it's in PATH (for cases where user has custom setup)
+    if let Ok(output) = Command::new("which").arg("ollama").output() {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                return Some(PathBuf::from(path_str));
+            }
+        }
+    }
+
+    None
+}
 
 pub async fn detect() -> Result<SystemInfo, String> {
     let os = std::env::consts::OS.to_string();
@@ -19,7 +53,16 @@ pub async fn detect() -> Result<SystemInfo, String> {
     let conda_installed = check_command_exists("conda");
     let git_installed = check_command_exists("git");
     let node_installed = check_command_exists("node");
-    let ollama_installed = check_command_exists("ollama");
+
+    // Use absolute path detection for Ollama (GUI apps have minimal PATH)
+    let ollama_path = find_ollama_binary();
+    let ollama_installed = ollama_path.is_some();
+    let ollama_running = is_port_in_use(OLLAMA_DEFAULT_PORT);
+    let ollama_version = if let Some(ref path) = ollama_path {
+        get_ollama_version_from_path(path)
+    } else {
+        None
+    };
 
     let braindrive_path = dirs::home_dir()
         .map(|p| p.join("BrainDrive"))
@@ -65,6 +108,8 @@ pub async fn detect() -> Result<SystemInfo, String> {
         git_installed,
         node_installed,
         ollama_installed,
+        ollama_running,
+        ollama_version,
         braindrive_exists,
         cpu_brand,
         cpu_physical_cores,
@@ -214,5 +259,31 @@ fn check_command_exists(cmd: &str) -> bool {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+}
+
+/// Get Ollama version string using absolute path (e.g., "0.1.17")
+fn get_ollama_version_from_path(ollama_path: &PathBuf) -> Option<String> {
+    let output = Command::new(ollama_path)
+        .arg("--version")
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Output format is typically "ollama version 0.1.17" or just "0.1.17"
+    let version = stdout
+        .trim()
+        .strip_prefix("ollama version ")
+        .unwrap_or(stdout.trim())
+        .to_string();
+
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
     }
 }

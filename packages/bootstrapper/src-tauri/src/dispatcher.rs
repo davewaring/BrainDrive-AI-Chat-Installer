@@ -3,16 +3,57 @@ use crate::process_manager::{
     spawn_detached, wait_for_port, wait_for_port_free, ProcessState, ServiceInfo,
 };
 use crate::system_info;
+use crate::websocket::{send_message, OutgoingMessage};
+use crate::WsSender;
 use regex::Regex;
 use serde_json::{json, Value};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
 const DEFAULT_REPO_DIR: &str = "BrainDrive";
 const CONDA_ENV_NAME: &str = "BrainDriveDev";
+const OLLAMA_DEFAULT_PORT: u16 = 11434;
+
+/// Known paths where Ollama might be installed
+/// GUI apps often have minimal PATH, so we check absolute paths directly
+const OLLAMA_KNOWN_PATHS: &[&str] = &[
+    "/usr/local/bin/ollama",
+    "/opt/homebrew/bin/ollama",
+    "/usr/bin/ollama",
+    "/snap/bin/ollama",
+];
+
+/// Find Ollama binary in known paths
+/// Returns the full path if found, None otherwise
+fn find_ollama_binary() -> Option<PathBuf> {
+    for path in OLLAMA_KNOWN_PATHS {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    // Also check if it's in PATH (for cases where user has custom setup)
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("ollama")
+        .output()
+    {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                return Some(PathBuf::from(path_str));
+            }
+        }
+    }
+
+    None
+}
 
 /// Detect system information and return it as JSON
 pub async fn detect_system() -> Result<Value, String> {
@@ -63,34 +104,241 @@ pub async fn install_conda_env(
     }))
 }
 
-/// Install Ollama through a reviewed helper
+/// Ensure Ollama is installed and running
+/// If installed: starts service if needed
+/// If not installed: returns instructions for manual installation
 pub async fn install_ollama() -> Result<Value, String> {
-    if command_exists("ollama") {
+    // Check if Ollama binary exists using absolute paths
+    if let Some(ollama_path) = find_ollama_binary() {
+        let version = get_ollama_version();
+        let running = is_port_in_use(OLLAMA_DEFAULT_PORT);
+
+        if running {
+            return Ok(json!({
+                "success": true,
+                "installed": true,
+                "ollama_path": ollama_path.to_string_lossy(),
+                "version": version,
+                "service_running": true,
+                "message": "Ollama is installed and running"
+            }));
+        }
+
+        // Installed but not running - start the service
+        let start_result = start_ollama_service().await;
+        let service_ok = start_result.is_ok();
+        let start_error = start_result.err();
+        return Ok(json!({
+            "success": service_ok,
+            "installed": true,
+            "ollama_path": ollama_path.to_string_lossy(),
+            "version": version,
+            "service_running": service_ok,
+            "service_start_error": start_error,
+            "message": if service_ok {
+                "Ollama service started successfully"
+            } else {
+                "Ollama is installed but failed to start service"
+            }
+        }));
+    }
+
+    // Ollama not found - return instructions for manual installation
+    let download_url = "https://ollama.com/download";
+    let os = std::env::consts::OS;
+
+    let install_instructions = match os {
+        "macos" => format!(
+            "Please install Ollama manually:\n\
+            1. Visit {} and download the macOS installer\n\
+            2. Open the downloaded .dmg file\n\
+            3. Drag Ollama to your Applications folder\n\
+            4. Open Ollama from Applications\n\
+            5. Come back here and I'll detect it automatically",
+            download_url
+        ),
+        "linux" => format!(
+            "Please install Ollama manually:\n\
+            1. Open a terminal\n\
+            2. Run: curl -fsSL https://ollama.com/install.sh | sh\n\
+            3. Start Ollama: ollama serve\n\
+            4. Come back here and I'll detect it automatically\n\n\
+            Or visit {} for other options",
+            download_url
+        ),
+        "windows" => format!(
+            "Please install Ollama manually:\n\
+            1. Visit {} and download the Windows installer\n\
+            2. Run the installer\n\
+            3. Ollama will start automatically\n\
+            4. Come back here and I'll detect it automatically",
+            download_url
+        ),
+        _ => format!("Please visit {} to download and install Ollama for your system.", download_url),
+    };
+
+    Ok(json!({
+        "success": false,
+        "installed": false,
+        "needs_manual_install": true,
+        "download_url": download_url,
+        "instructions": install_instructions,
+        "message": "Ollama is not installed. Please install it manually and I'll detect it automatically."
+    }))
+}
+
+/// Get Ollama version string using absolute path
+fn get_ollama_version() -> Option<String> {
+    let ollama_path = find_ollama_binary()?;
+
+    let output = std::process::Command::new(&ollama_path)
+        .arg("--version")
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout
+        .trim()
+        .strip_prefix("ollama version ")
+        .unwrap_or(stdout.trim())
+        .to_string();
+
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
+/// Start the Ollama service (public API)
+pub async fn start_ollama() -> Result<Value, String> {
+    // Use absolute path detection
+    let ollama_path = match find_ollama_binary() {
+        Some(path) => path,
+        None => {
+            return Ok(json!({
+                "success": false,
+                "installed": false,
+                "message": "Ollama is not installed. Please install it first from https://ollama.com/download"
+            }));
+        }
+    };
+
+    if is_port_in_use(OLLAMA_DEFAULT_PORT) {
+        let version = get_ollama_version();
         return Ok(json!({
             "success": true,
-            "message": "Ollama already installed"
+            "already_running": true,
+            "ollama_path": ollama_path.to_string_lossy(),
+            "version": version,
+            "message": "Ollama service is already running"
         }));
+    }
+
+    let result = start_ollama_service().await;
+    let version = get_ollama_version();
+
+    match result {
+        Ok(()) => Ok(json!({
+            "success": true,
+            "already_running": false,
+            "version": version,
+            "message": "Ollama service started successfully"
+        })),
+        Err(e) => Ok(json!({
+            "success": false,
+            "error": e,
+            "message": "Failed to start Ollama service"
+        })),
+    }
+}
+
+/// Start the Ollama service and wait for it to be ready (internal helper)
+async fn start_ollama_service() -> Result<(), String> {
+    // Check if already running
+    if is_port_in_use(OLLAMA_DEFAULT_PORT) {
+        return Ok(());
+    }
+
+    // Find the ollama binary - must exist to start service
+    let ollama_path = find_ollama_binary()
+        .ok_or("Ollama binary not found. Please install Ollama first.")?;
+    let ollama_path_str = ollama_path.to_string_lossy().to_string();
+
+    let home_dir = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let empty_env: &[(&str, &str)] = &[];
+
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, try launchctl first (if installed as service), then fall back to ollama serve
+        let launchctl_result = std::process::Command::new("launchctl")
+            .args(["start", "com.ollama.ollama"])
+            .output();
+
+        if let Ok(output) = launchctl_result {
+            if output.status.success() {
+                // Wait for service to be ready
+                if wait_for_port(OLLAMA_DEFAULT_PORT, 30).await {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Fall back to spawning ollama serve directly using absolute path
+        spawn_detached(&ollama_path_str, &["serve"], &home_dir, empty_env).await
+            .map_err(|e| format!("Failed to start Ollama service: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, try systemctl first, then fall back to ollama serve
+        let systemctl_result = std::process::Command::new("systemctl")
+            .args(["--user", "start", "ollama"])
+            .output();
+
+        if let Ok(output) = systemctl_result {
+            if output.status.success() {
+                if wait_for_port(OLLAMA_DEFAULT_PORT, 30).await {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Try system-level systemctl
+        let systemctl_system = std::process::Command::new("systemctl")
+            .args(["start", "ollama"])
+            .output();
+
+        if let Ok(output) = systemctl_system {
+            if output.status.success() {
+                if wait_for_port(OLLAMA_DEFAULT_PORT, 30).await {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Fall back to spawning ollama serve directly using absolute path
+        spawn_detached(&ollama_path_str, &["serve"], &home_dir, empty_env).await
+            .map_err(|e| format!("Failed to start Ollama service: {}", e))?;
     }
 
     #[cfg(target_os = "windows")]
     {
-        return Err("Automatic Ollama installation is not yet supported on Windows. Please install it manually from https://ollama.com/download.".to_string());
+        // On Windows, just spawn ollama serve using absolute path
+        spawn_detached(&ollama_path_str, &["serve"], &home_dir, empty_env).await
+            .map_err(|e| format!("Failed to start Ollama service: {}", e))?;
     }
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        let script = "curl -fsSL https://ollama.com/install.sh | sh";
-        let result = run_shell_script(script).await?;
-        return Ok(json!({
-            "success": result.success,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "exit_code": result.exit_code
-        }));
+    // Wait for service to be ready
+    if wait_for_port(OLLAMA_DEFAULT_PORT, 30).await {
+        Ok(())
+    } else {
+        Err("Ollama service started but not responding on port 11434 after 30 seconds".to_string())
     }
-
-    #[allow(unreachable_code)]
-    Err("Unsupported platform for automatic Ollama installation".to_string())
 }
 
 /// Pull a vetted Ollama model
@@ -125,6 +373,178 @@ pub async fn pull_ollama_model(
         "stderr": result.stderr,
         "model": sanitized_model
     }))
+}
+
+/// Pull a vetted Ollama model with progress streaming
+pub async fn pull_ollama_model_with_progress(
+    model: &str,
+    registry: Option<String>,
+    force: bool,
+    request_id: String,
+    sender: Arc<Mutex<Option<WsSender>>>,
+) -> Result<Value, String> {
+    // Find Ollama binary using absolute path
+    let ollama_path = find_ollama_binary()
+        .ok_or("Ollama is not installed. Please install it first from https://ollama.com/download")?;
+
+    let sanitized_model = sanitize_model_name(model)?;
+
+    let model_arg = if let Some(ref reg) = registry {
+        let sanitized_registry = sanitize_registry(reg)?;
+        format!("{}{}", sanitized_registry, sanitized_model)
+    } else {
+        sanitized_model.clone()
+    };
+
+    let mut command = Command::new(&ollama_path);
+    command
+        .arg("pull")
+        .arg(&model_arg)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if force {
+        command.arg("--force");
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ollama pull: {}", e))?;
+
+    let stderr = child.stderr.take()
+        .ok_or("Failed to capture stderr")?;
+
+    let mut reader = BufReader::new(stderr).lines();
+    let mut last_progress_message = String::new();
+
+    // Read stderr line by line (ollama outputs progress to stderr)
+    while let Ok(Some(line)) = reader.next_line().await {
+        if let Some(progress) = parse_ollama_progress(&line) {
+            // Only send if message changed (avoid spamming identical updates)
+            if line != last_progress_message {
+                last_progress_message = line.clone();
+
+                let progress_msg = OutgoingMessage::Progress {
+                    id: request_id.clone(),
+                    operation: "pull_ollama_model".to_string(),
+                    percent: progress.percent,
+                    message: progress.message,
+                    bytes_downloaded: progress.bytes_downloaded,
+                    bytes_total: progress.bytes_total,
+                };
+
+                // Send progress, ignore errors (best effort)
+                let _ = send_message(&sender, progress_msg).await;
+            }
+        }
+    }
+
+    // Wait for the process to complete
+    let status = child.wait().await
+        .map_err(|e| format!("Failed to wait for ollama: {}", e))?;
+
+    let success = status.success();
+
+    // Send final progress
+    let final_msg = OutgoingMessage::Progress {
+        id: request_id.clone(),
+        operation: "pull_ollama_model".to_string(),
+        percent: if success { Some(100) } else { None },
+        message: if success {
+            format!("Successfully pulled {}", sanitized_model)
+        } else {
+            "Download failed".to_string()
+        },
+        bytes_downloaded: None,
+        bytes_total: None,
+    };
+    let _ = send_message(&sender, final_msg).await;
+
+    Ok(json!({
+        "success": success,
+        "exit_code": status.code().unwrap_or(-1),
+        "model": sanitized_model
+    }))
+}
+
+/// Parsed progress information from Ollama output
+struct OllamaProgress {
+    percent: Option<u8>,
+    message: String,
+    bytes_downloaded: Option<u64>,
+    bytes_total: Option<u64>,
+}
+
+/// Parse Ollama's progress output
+/// Example formats:
+/// "pulling manifest"
+/// "pulling 8934d96d3f08... 45% ▕████░░░░░░░░░░░░▏ 1.2 GB/2.7 GB"
+/// "verifying sha256 digest"
+/// "writing manifest"
+/// "success"
+fn parse_ollama_progress(line: &str) -> Option<OllamaProgress> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    // Try to parse percentage from lines like "pulling abc... 45%"
+    let percent_re = Regex::new(r"(\d+)%").ok()?;
+    let percent = percent_re.captures(line)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<u8>().ok());
+
+    // Try to parse bytes like "1.2 GB/2.7 GB" or "500 MB/1.1 GB"
+    let bytes_re = Regex::new(r"([\d.]+)\s*(KB|MB|GB)/([\d.]+)\s*(KB|MB|GB)").ok()?;
+    let (bytes_downloaded, bytes_total) = if let Some(caps) = bytes_re.captures(line) {
+        let downloaded = parse_size_to_bytes(
+            caps.get(1).map(|m| m.as_str()).unwrap_or("0"),
+            caps.get(2).map(|m| m.as_str()).unwrap_or("B"),
+        );
+        let total = parse_size_to_bytes(
+            caps.get(3).map(|m| m.as_str()).unwrap_or("0"),
+            caps.get(4).map(|m| m.as_str()).unwrap_or("B"),
+        );
+        (downloaded, total)
+    } else {
+        (None, None)
+    };
+
+    // Create a cleaner message
+    let message = if line.starts_with("pulling") {
+        if percent.is_some() {
+            format!("Downloading model... {}%", percent.unwrap())
+        } else {
+            "Pulling manifest...".to_string()
+        }
+    } else if line.starts_with("verifying") {
+        "Verifying download...".to_string()
+    } else if line.starts_with("writing") {
+        "Writing manifest...".to_string()
+    } else if line == "success" {
+        "Download complete!".to_string()
+    } else {
+        line.to_string()
+    };
+
+    Some(OllamaProgress {
+        percent,
+        message,
+        bytes_downloaded,
+        bytes_total,
+    })
+}
+
+/// Convert size string to bytes
+fn parse_size_to_bytes(value: &str, unit: &str) -> Option<u64> {
+    let num: f64 = value.parse().ok()?;
+    let multiplier = match unit.to_uppercase().as_str() {
+        "KB" => 1024.0,
+        "MB" => 1024.0 * 1024.0,
+        "GB" => 1024.0 * 1024.0 * 1024.0,
+        _ => 1.0,
+    };
+    Some((num * multiplier) as u64)
 }
 
 /// Clone the BrainDrive repository

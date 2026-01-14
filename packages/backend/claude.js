@@ -265,6 +265,14 @@ export class ClaudeClient {
           return ollamaResult.data || ollamaResult;
         }
 
+        case 'start_ollama': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          const startResult = await this.hub.callBootstrapperTool('start_ollama', {}, 60000);
+          return startResult.data || startResult;
+        }
+
         case 'pull_ollama_model': {
           if (!this.hub.isBootstrapperConnected()) {
             return { error: 'Bootstrapper not connected' };

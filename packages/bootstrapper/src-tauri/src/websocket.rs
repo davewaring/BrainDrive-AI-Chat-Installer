@@ -29,6 +29,9 @@ pub enum IncomingMessage {
     #[serde(rename = "install_ollama")]
     InstallOllama { id: String },
 
+    #[serde(rename = "start_ollama")]
+    StartOllama { id: String },
+
     #[serde(rename = "pull_ollama_model")]
     PullOllamaModel {
         id: String,
@@ -127,6 +130,18 @@ pub enum OutgoingMessage {
         data: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    },
+
+    #[serde(rename = "progress")]
+    Progress {
+        id: String,
+        operation: String,
+        percent: Option<u8>,
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bytes_downloaded: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bytes_total: Option<u64>,
     },
 }
 
@@ -262,6 +277,12 @@ async fn handle_incoming_message(
             send_tool_result(sender, id, result).await;
         }
 
+        IncomingMessage::StartOllama { id } => {
+            app.emit("command-executing", "Starting Ollama service").ok();
+            let result = dispatcher::start_ollama().await;
+            send_tool_result(sender, id, result).await;
+        }
+
         IncomingMessage::PullOllamaModel {
             id,
             model,
@@ -270,7 +291,14 @@ async fn handle_incoming_message(
         } => {
             app.emit("command-executing", format!("Pulling model {}", model))
                 .ok();
-            let result = dispatcher::pull_ollama_model(&model, registry, force.unwrap_or(false)).await;
+            // Use streaming version that sends progress updates
+            let result = dispatcher::pull_ollama_model_with_progress(
+                &model,
+                registry,
+                force.unwrap_or(false),
+                id.clone(),
+                sender.clone(),
+            ).await;
             send_tool_result(sender, id, result).await;
         }
 

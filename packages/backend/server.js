@@ -78,6 +78,20 @@ wss.on('connection', (ws) => {
         return;
       }
 
+      // Handle progress updates from bootstrapper - forward to browser
+      if (message.type === 'progress') {
+        hub.sendToBrowser({
+          type: 'progress',
+          id: message.id,
+          operation: message.operation,
+          percent: message.percent,
+          message: message.message,
+          bytes_downloaded: message.bytes_downloaded,
+          bytes_total: message.bytes_total,
+        });
+        return;
+      }
+
       // Handle responses from bootstrapper
       if (message.id && hub.hasPendingCall(message.id)) {
         hub.resolvePendingCall(message.id, message);
