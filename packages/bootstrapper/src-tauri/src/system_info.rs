@@ -10,28 +10,45 @@ const OLLAMA_DEFAULT_PORT: u16 = 11434;
 /// Known paths where Ollama might be installed
 /// GUI apps often have minimal PATH, so we check absolute paths directly
 const OLLAMA_KNOWN_PATHS: &[&str] = &[
+    // Unix paths
     "/usr/local/bin/ollama",
     "/opt/homebrew/bin/ollama",
     "/usr/bin/ollama",
     "/snap/bin/ollama",
+    // Windows paths - checked at runtime via home directory
 ];
 
-/// Known paths where Conda might be installed
-const CONDA_KNOWN_PATHS: &[&str] = &[
+/// Known paths where Conda might be installed (Unix)
+const CONDA_KNOWN_PATHS_UNIX: &[&str] = &[
     "/opt/miniconda3/bin/conda",
     "/opt/anaconda3/bin/conda",
     "/opt/homebrew/bin/conda",
     "/usr/local/bin/conda",
 ];
 
-/// Known paths where Node.js might be installed
-const NODE_KNOWN_PATHS: &[&str] = &[
+/// Known paths where Node.js might be installed (Unix)
+const NODE_KNOWN_PATHS_UNIX: &[&str] = &[
     "/usr/local/bin/node",
     "/opt/homebrew/bin/node",
     "/usr/bin/node",
 ];
 
-/// Check if a binary exists at known paths or via which command
+/// Known paths where Node.js might be installed (Windows)
+#[cfg(target_os = "windows")]
+const NODE_KNOWN_PATHS_WINDOWS: &[&str] = &[
+    "C:\\Program Files\\nodejs\\node.exe",
+    "C:\\Program Files (x86)\\nodejs\\node.exe",
+];
+
+/// Known paths where Git might be installed (Windows)
+#[cfg(target_os = "windows")]
+const GIT_KNOWN_PATHS_WINDOWS: &[&str] = &[
+    "C:\\Program Files\\Git\\bin\\git.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\git.exe",
+];
+
+/// Check if a binary exists at known paths or via which/where command
+#[allow(dead_code)]
 fn check_binary_exists(known_paths: &[&str], cmd: &str) -> bool {
     // Check known paths first
     for path in known_paths {
@@ -39,37 +56,102 @@ fn check_binary_exists(known_paths: &[&str], cmd: &str) -> bool {
             return true;
         }
     }
-    // Fall back to which
+    // Fall back to which/where
     check_command_exists(cmd)
 }
 
 /// Check if conda is installed (includes home directory paths)
 fn check_conda_installed() -> bool {
-    // Check system-wide paths
-    for path in CONDA_KNOWN_PATHS {
+    // Check system-wide paths (Unix only)
+    #[cfg(not(target_os = "windows"))]
+    for path in CONDA_KNOWN_PATHS_UNIX {
         if PathBuf::from(path).exists() {
             return true;
         }
     }
-    // Check home directory paths
+
+    // Check home directory paths (works for both Unix and Windows)
     if let Some(home) = dirs::home_dir() {
+        #[cfg(not(target_os = "windows"))]
         let home_paths = [
             home.join("miniconda3/bin/conda"),
             home.join("anaconda3/bin/conda"),
             home.join(".conda/bin/conda"),
         ];
+
+        #[cfg(target_os = "windows")]
+        let home_paths = [
+            home.join("miniconda3\\Scripts\\conda.exe"),
+            home.join("anaconda3\\Scripts\\conda.exe"),
+            home.join("miniconda3\\condabin\\conda.bat"),
+            home.join("anaconda3\\condabin\\conda.bat"),
+        ];
+
         for path in &home_paths {
             if path.exists() {
                 return true;
             }
         }
     }
-    // Fall back to which
+
+    // Check Windows system-wide paths
+    #[cfg(target_os = "windows")]
+    {
+        let system_paths = [
+            "C:\\ProgramData\\miniconda3\\Scripts\\conda.exe",
+            "C:\\ProgramData\\anaconda3\\Scripts\\conda.exe",
+        ];
+        for path in &system_paths {
+            if PathBuf::from(path).exists() {
+                return true;
+            }
+        }
+    }
+
+    // Fall back to which/where
     check_command_exists("conda")
+}
+
+/// Check if git is installed
+fn check_git_installed() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        for path in GIT_KNOWN_PATHS_WINDOWS {
+            if PathBuf::from(path).exists() {
+                return true;
+            }
+        }
+    }
+    check_command_exists("git")
+}
+
+/// Check if node is installed
+fn check_node_installed() -> bool {
+    #[cfg(not(target_os = "windows"))]
+    {
+        for path in NODE_KNOWN_PATHS_UNIX {
+            if PathBuf::from(path).exists() {
+                return true;
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for path in NODE_KNOWN_PATHS_WINDOWS {
+            if PathBuf::from(path).exists() {
+                return true;
+            }
+        }
+    }
+
+    check_command_exists("node")
 }
 
 /// Find Ollama binary in known paths
 fn find_ollama_binary() -> Option<PathBuf> {
+    // Check Unix paths
+    #[cfg(not(target_os = "windows"))]
     for path in OLLAMA_KNOWN_PATHS {
         let path = PathBuf::from(path);
         if path.exists() {
@@ -77,12 +159,51 @@ fn find_ollama_binary() -> Option<PathBuf> {
         }
     }
 
-    // Also check if it's in PATH (for cases where user has custom setup)
-    if let Ok(output) = Command::new("which").arg("ollama").output() {
-        if output.status.success() {
-            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path_str.is_empty() {
-                return Some(PathBuf::from(path_str));
+    // Check Windows paths
+    #[cfg(target_os = "windows")]
+    {
+        // Check common Windows install locations
+        if let Some(local_app_data) = dirs::data_local_dir() {
+            let ollama_path = local_app_data.join("Programs\\Ollama\\ollama.exe");
+            if ollama_path.exists() {
+                return Some(ollama_path);
+            }
+        }
+        // Check Program Files
+        let program_paths = [
+            "C:\\Program Files\\Ollama\\ollama.exe",
+            "C:\\Program Files (x86)\\Ollama\\ollama.exe",
+        ];
+        for path in &program_paths {
+            let p = PathBuf::from(path);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+
+    // Fall back to which/where
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(output) = Command::new("which").arg("ollama").output() {
+            if output.status.success() {
+                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path_str.is_empty() {
+                    return Some(PathBuf::from(path_str));
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = Command::new("where").arg("ollama").output() {
+            if output.status.success() {
+                if let Some(first_line) = String::from_utf8_lossy(&output.stdout).lines().next() {
+                    if !first_line.is_empty() {
+                        return Some(PathBuf::from(first_line));
+                    }
+                }
             }
         }
     }
@@ -103,8 +224,8 @@ pub async fn detect() -> Result<SystemInfo, String> {
         .unwrap_or_else(|| "unknown".to_string());
 
     let conda_installed = check_conda_installed();
-    let git_installed = check_command_exists("git");
-    let node_installed = check_binary_exists(NODE_KNOWN_PATHS, "node");
+    let git_installed = check_git_installed();
+    let node_installed = check_node_installed();
 
     // Use absolute path detection for Ollama (GUI apps have minimal PATH)
     let ollama_path = find_ollama_binary();

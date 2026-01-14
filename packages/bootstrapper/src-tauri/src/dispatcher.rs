@@ -19,6 +19,7 @@ use tokio::time::{sleep, Duration};
 const DEFAULT_REPO_DIR: &str = "BrainDrive";
 const CONDA_ENV_NAME: &str = "BrainDriveDev";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
+const MINICONDA_INSTALL_DIR: &str = "miniconda3";
 
 /// Known paths where Ollama might be installed
 /// GUI apps often have minimal PATH, so we check absolute paths directly
@@ -102,6 +103,635 @@ pub async fn install_conda_env(
         "env_name": sanitized_env,
         "environment_file": env_file.to_string_lossy()
     }))
+}
+
+/// Install Miniconda automatically (no sudo required)
+/// Downloads the installer for the user's platform and runs it in batch mode
+pub async fn install_conda(
+    request_id: String,
+    sender: Arc<Mutex<Option<WsSender>>>,
+) -> Result<Value, String> {
+    // Check if conda is already installed
+    if let Some(conda_path) = find_conda_binary() {
+        return Ok(json!({
+            "success": true,
+            "already_installed": true,
+            "conda_path": conda_path.to_string_lossy(),
+            "message": "Conda is already installed"
+        }));
+    }
+
+    let home_dir = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let install_path = home_dir.join(MINICONDA_INSTALL_DIR);
+
+    // Check if miniconda directory already exists
+    if install_path.exists() {
+        let conda_in_install = install_path.join("bin/conda");
+        if conda_in_install.exists() {
+            return Ok(json!({
+                "success": true,
+                "already_installed": true,
+                "conda_path": conda_in_install.to_string_lossy(),
+                "message": "Miniconda is already installed"
+            }));
+        }
+    }
+
+    // Determine the correct installer URL based on OS and architecture
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    let installer_url = match (os, arch) {
+        ("macos", "aarch64") => "https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh",
+        ("macos", "x86_64") => "https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh",
+        ("linux", "x86_64") => "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh",
+        ("linux", "aarch64") => "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh",
+        ("windows", "x86_64") => "https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe",
+        _ => return Err(format!("Unsupported platform: {} {}", os, arch)),
+    };
+
+    // Create temp directory for installer
+    let temp_dir = home_dir.join(".braindrive-installer").join("downloads");
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create download directory: {}", e))?;
+
+    let installer_filename = if os == "windows" {
+        "Miniconda3-installer.exe"
+    } else {
+        "Miniconda3-installer.sh"
+    };
+    let installer_path = temp_dir.join(installer_filename);
+
+    // Send initial progress
+    let _ = send_message(&sender, OutgoingMessage::Progress {
+        id: request_id.clone(),
+        operation: "install_conda".to_string(),
+        percent: Some(0),
+        message: "Downloading Miniconda installer...".to_string(),
+        bytes_downloaded: None,
+        bytes_total: None,
+    }).await;
+
+    // Download the installer with progress
+    download_file_with_progress(
+        installer_url,
+        &installer_path,
+        request_id.clone(),
+        sender.clone(),
+        "install_conda",
+    ).await?;
+
+    // Send progress for installation phase
+    let _ = send_message(&sender, OutgoingMessage::Progress {
+        id: request_id.clone(),
+        operation: "install_conda".to_string(),
+        percent: Some(50),
+        message: "Installing Miniconda (this may take a minute)...".to_string(),
+        bytes_downloaded: None,
+        bytes_total: None,
+    }).await;
+
+    // Run the installer
+    let install_result = if os == "windows" {
+        run_windows_miniconda_installer(&installer_path, &install_path).await
+    } else {
+        run_unix_miniconda_installer(&installer_path, &install_path).await
+    };
+
+    // Clean up installer file
+    let _ = std::fs::remove_file(&installer_path);
+
+    match install_result {
+        Ok(()) => {
+            // Verify installation
+            let conda_binary = if os == "windows" {
+                install_path.join("Scripts/conda.exe")
+            } else {
+                install_path.join("bin/conda")
+            };
+
+            if !conda_binary.exists() {
+                return Err("Miniconda installation completed but conda binary not found".to_string());
+            }
+
+            // Send completion progress
+            let _ = send_message(&sender, OutgoingMessage::Progress {
+                id: request_id.clone(),
+                operation: "install_conda".to_string(),
+                percent: Some(100),
+                message: "Miniconda installed successfully!".to_string(),
+                bytes_downloaded: None,
+                bytes_total: None,
+            }).await;
+
+            Ok(json!({
+                "success": true,
+                "already_installed": false,
+                "conda_path": conda_binary.to_string_lossy(),
+                "install_path": install_path.to_string_lossy(),
+                "message": "Miniconda installed successfully"
+            }))
+        }
+        Err(e) => Err(format!("Failed to install Miniconda: {}", e)),
+    }
+}
+
+/// Find conda binary in known paths (including user home directory)
+fn find_conda_binary() -> Option<PathBuf> {
+    // Check home directory paths first (most common for user installs)
+    if let Some(home) = dirs::home_dir() {
+        let home_paths = [
+            home.join("miniconda3/bin/conda"),
+            home.join("anaconda3/bin/conda"),
+            home.join(".conda/bin/conda"),
+            // Windows paths
+            home.join("miniconda3/Scripts/conda.exe"),
+            home.join("anaconda3/Scripts/conda.exe"),
+        ];
+        for path in &home_paths {
+            if path.exists() {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    // Check system-wide paths
+    let system_paths = [
+        "/opt/miniconda3/bin/conda",
+        "/opt/anaconda3/bin/conda",
+        "/opt/homebrew/bin/conda",
+        "/usr/local/bin/conda",
+    ];
+    for path in &system_paths {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // Fall back to which/where
+    if cfg!(target_os = "windows") {
+        if let Ok(output) = std::process::Command::new("where").arg("conda").output() {
+            if output.status.success() {
+                let path_str = String::from_utf8_lossy(&output.stdout).lines().next()?.to_string();
+                if !path_str.is_empty() {
+                    return Some(PathBuf::from(path_str));
+                }
+            }
+        }
+    } else {
+        if let Ok(output) = std::process::Command::new("which").arg("conda").output() {
+            if output.status.success() {
+                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path_str.is_empty() {
+                    return Some(PathBuf::from(path_str));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Download a file with progress updates
+async fn download_file_with_progress(
+    url: &str,
+    dest: &PathBuf,
+    request_id: String,
+    sender: Arc<Mutex<Option<WsSender>>>,
+    operation: &str,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let client = reqwest::Client::new();
+    let response = client.get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to start download: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status: {}", response.status()));
+    }
+
+    let total_size = response.content_length();
+    let mut downloaded: u64 = 0;
+
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+
+    let mut stream = response.bytes_stream();
+    let mut last_percent: u8 = 0;
+
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+
+        downloaded += chunk.len() as u64;
+
+        // Calculate and send progress (only if we know total size)
+        if let Some(total) = total_size {
+            let percent = ((downloaded as f64 / total as f64) * 50.0) as u8; // 0-50% for download
+            if percent > last_percent {
+                last_percent = percent;
+                let _ = send_message(&sender, OutgoingMessage::Progress {
+                    id: request_id.clone(),
+                    operation: operation.to_string(),
+                    percent: Some(percent),
+                    message: format!("Downloading... {:.1} MB / {:.1} MB",
+                        downloaded as f64 / 1_048_576.0,
+                        total as f64 / 1_048_576.0
+                    ),
+                    bytes_downloaded: Some(downloaded),
+                    bytes_total: Some(total),
+                }).await;
+            }
+        }
+    }
+
+    file.flush().await.map_err(|e| format!("Failed to flush file: {}", e))?;
+
+    Ok(())
+}
+
+/// Run the Miniconda installer on Unix (macOS/Linux)
+async fn run_unix_miniconda_installer(installer_path: &PathBuf, install_path: &PathBuf) -> Result<(), String> {
+    // Make installer executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(installer_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Failed to make installer executable: {}", e))?;
+    }
+
+    // Run installer in batch mode
+    // -b = batch mode (no prompts)
+    // -p = prefix (install location)
+    // -u = update existing installation
+    let output = Command::new("bash")
+        .arg(installer_path)
+        .arg("-b")
+        .arg("-p")
+        .arg(install_path)
+        .arg("-u")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run installer: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Installer failed: {}", stderr));
+    }
+
+    Ok(())
+}
+
+/// Run the Miniconda installer on Windows
+#[cfg(target_os = "windows")]
+async fn run_windows_miniconda_installer(installer_path: &PathBuf, install_path: &PathBuf) -> Result<(), String> {
+    // Run installer silently
+    // /S = silent
+    // /D= = destination (no space after =)
+    let output = Command::new(installer_path)
+        .arg("/S")
+        .arg(format!("/D={}", install_path.display()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run installer: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Installer failed: {}", stderr));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn run_windows_miniconda_installer(_installer_path: &PathBuf, _install_path: &PathBuf) -> Result<(), String> {
+    Err("Windows installer not supported on this platform".to_string())
+}
+
+/// Install Git automatically
+/// - macOS: Triggers Xcode Command Line Tools installation (native GUI dialog)
+/// - Windows: Downloads and runs Git installer silently
+/// - Linux: Returns instructions (requires sudo)
+pub async fn install_git(
+    request_id: String,
+    sender: Arc<Mutex<Option<WsSender>>>,
+) -> Result<Value, String> {
+    // Check if git is already installed
+    if let Some(git_path) = find_git_binary() {
+        return Ok(json!({
+            "success": true,
+            "already_installed": true,
+            "git_path": git_path.to_string_lossy(),
+            "message": "Git is already installed"
+        }));
+    }
+
+    let os = std::env::consts::OS;
+
+    match os {
+        "macos" => install_git_macos(request_id, sender).await,
+        "windows" => install_git_windows(request_id, sender).await,
+        "linux" => {
+            // Linux typically requires sudo for package manager
+            Ok(json!({
+                "success": false,
+                "needs_manual_install": true,
+                "instructions": "Please install Git using your package manager:\n\
+                    - Ubuntu/Debian: sudo apt install git\n\
+                    - Fedora: sudo dnf install git\n\
+                    - Arch: sudo pacman -S git\n\n\
+                    After installing, come back and I'll detect it automatically.",
+                "message": "Git installation on Linux requires sudo. Please install manually."
+            }))
+        }
+        _ => Err(format!("Unsupported platform: {}", os)),
+    }
+}
+
+/// Find git binary in known paths
+fn find_git_binary() -> Option<PathBuf> {
+    // Check common paths
+    let known_paths = [
+        "/usr/bin/git",
+        "/usr/local/bin/git",
+        "/opt/homebrew/bin/git",
+        // Windows paths
+        "C:\\Program Files\\Git\\bin\\git.exe",
+        "C:\\Program Files (x86)\\Git\\bin\\git.exe",
+    ];
+
+    for path in &known_paths {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // Fall back to which/where
+    if cfg!(target_os = "windows") {
+        if let Ok(output) = std::process::Command::new("where").arg("git").output() {
+            if output.status.success() {
+                if let Some(first_line) = String::from_utf8_lossy(&output.stdout).lines().next() {
+                    if !first_line.is_empty() {
+                        return Some(PathBuf::from(first_line));
+                    }
+                }
+            }
+        }
+    } else {
+        if let Ok(output) = std::process::Command::new("which").arg("git").output() {
+            if output.status.success() {
+                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path_str.is_empty() {
+                    return Some(PathBuf::from(path_str));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Install Git on macOS via Xcode Command Line Tools
+/// This triggers a native macOS GUI dialog - no terminal needed
+async fn install_git_macos(
+    request_id: String,
+    sender: Arc<Mutex<Option<WsSender>>>,
+) -> Result<Value, String> {
+    // Send initial progress
+    let _ = send_message(&sender, OutgoingMessage::Progress {
+        id: request_id.clone(),
+        operation: "install_git".to_string(),
+        percent: Some(10),
+        message: "Triggering Xcode Command Line Tools installation...".to_string(),
+        bytes_downloaded: None,
+        bytes_total: None,
+    }).await;
+
+    // Check if Xcode CLI tools are already installed
+    let xcode_check = std::process::Command::new("xcode-select")
+        .arg("-p")
+        .output();
+
+    if let Ok(output) = xcode_check {
+        if output.status.success() {
+            // Xcode CLI tools installed, but git might not be in expected path
+            // Try to find git
+            if let Some(git_path) = find_git_binary() {
+                return Ok(json!({
+                    "success": true,
+                    "already_installed": true,
+                    "git_path": git_path.to_string_lossy(),
+                    "message": "Git is already installed via Xcode Command Line Tools"
+                }));
+            }
+        }
+    }
+
+    // Trigger Xcode Command Line Tools installation
+    // This opens a native macOS dialog asking the user to install
+    let install_result = std::process::Command::new("xcode-select")
+        .arg("--install")
+        .output();
+
+    match install_result {
+        Ok(output) => {
+            if output.status.success() || output.status.code() == Some(1) {
+                // status code 1 means installation dialog was triggered
+                // Now we need to wait for the user to complete the installation
+                let _ = send_message(&sender, OutgoingMessage::Progress {
+                    id: request_id.clone(),
+                    operation: "install_git".to_string(),
+                    percent: Some(20),
+                    message: "Installation dialog opened. Please click 'Install' in the popup...".to_string(),
+                    bytes_downloaded: None,
+                    bytes_total: None,
+                }).await;
+
+                // Poll for git to become available (user needs to click Install in the dialog)
+                // Wait up to 10 minutes for the installation to complete
+                let max_wait_secs = 600;
+                let poll_interval_secs = 5;
+                let mut waited = 0;
+
+                while waited < max_wait_secs {
+                    sleep(Duration::from_secs(poll_interval_secs)).await;
+                    waited += poll_interval_secs;
+
+                    // Check if git is now available
+                    if let Some(git_path) = find_git_binary() {
+                        let _ = send_message(&sender, OutgoingMessage::Progress {
+                            id: request_id.clone(),
+                            operation: "install_git".to_string(),
+                            percent: Some(100),
+                            message: "Git installed successfully!".to_string(),
+                            bytes_downloaded: None,
+                            bytes_total: None,
+                        }).await;
+
+                        return Ok(json!({
+                            "success": true,
+                            "already_installed": false,
+                            "git_path": git_path.to_string_lossy(),
+                            "message": "Git installed successfully via Xcode Command Line Tools"
+                        }));
+                    }
+
+                    // Update progress
+                    let progress = 20 + ((waited as f64 / max_wait_secs as f64) * 70.0) as u8;
+                    let _ = send_message(&sender, OutgoingMessage::Progress {
+                        id: request_id.clone(),
+                        operation: "install_git".to_string(),
+                        percent: Some(progress.min(90)),
+                        message: "Waiting for Xcode Command Line Tools installation to complete...".to_string(),
+                        bytes_downloaded: None,
+                        bytes_total: None,
+                    }).await;
+                }
+
+                // Timed out waiting for installation
+                Ok(json!({
+                    "success": false,
+                    "pending_install": true,
+                    "message": "Installation dialog was opened. Please complete the installation and try again.",
+                    "instructions": "Click 'Install' in the Xcode Command Line Tools dialog, wait for it to complete, then continue."
+                }))
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // Check if it says already installed
+                if stderr.contains("already installed") {
+                    if let Some(git_path) = find_git_binary() {
+                        return Ok(json!({
+                            "success": true,
+                            "already_installed": true,
+                            "git_path": git_path.to_string_lossy(),
+                            "message": "Xcode Command Line Tools already installed"
+                        }));
+                    }
+                }
+                Err(format!("Failed to trigger Xcode CLI tools installation: {}", stderr))
+            }
+        }
+        Err(e) => Err(format!("Failed to run xcode-select: {}", e)),
+    }
+}
+
+/// Install Git on Windows by downloading and running the installer silently
+async fn install_git_windows(
+    request_id: String,
+    sender: Arc<Mutex<Option<WsSender>>>,
+) -> Result<Value, String> {
+    let home_dir = dirs::home_dir().ok_or("Could not determine home directory")?;
+
+    // Send initial progress
+    let _ = send_message(&sender, OutgoingMessage::Progress {
+        id: request_id.clone(),
+        operation: "install_git".to_string(),
+        percent: Some(0),
+        message: "Fetching latest Git for Windows version...".to_string(),
+        bytes_downloaded: None,
+        bytes_total: None,
+    }).await;
+
+    // Get the latest Git for Windows release URL
+    // We'll use a known stable version to avoid API calls
+    let arch = std::env::consts::ARCH;
+    let installer_url = if arch == "x86_64" {
+        // Use a recent stable version - Git for Windows 2.43.0
+        "https://github.com/git-for-windows/git/releases/download/v2.43.0.windows.1/Git-2.43.0-64-bit.exe"
+    } else {
+        "https://github.com/git-for-windows/git/releases/download/v2.43.0.windows.1/Git-2.43.0-32-bit.exe"
+    };
+
+    // Create temp directory for installer
+    let temp_dir = home_dir.join(".braindrive-installer").join("downloads");
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create download directory: {}", e))?;
+
+    let installer_path = temp_dir.join("Git-installer.exe");
+
+    // Download the installer
+    let _ = send_message(&sender, OutgoingMessage::Progress {
+        id: request_id.clone(),
+        operation: "install_git".to_string(),
+        percent: Some(5),
+        message: "Downloading Git for Windows...".to_string(),
+        bytes_downloaded: None,
+        bytes_total: None,
+    }).await;
+
+    download_file_with_progress(
+        installer_url,
+        &installer_path,
+        request_id.clone(),
+        sender.clone(),
+        "install_git",
+    ).await?;
+
+    // Run the installer silently
+    let _ = send_message(&sender, OutgoingMessage::Progress {
+        id: request_id.clone(),
+        operation: "install_git".to_string(),
+        percent: Some(60),
+        message: "Installing Git (this may take a minute)...".to_string(),
+        bytes_downloaded: None,
+        bytes_total: None,
+    }).await;
+
+    // Run Git installer with silent options
+    // /VERYSILENT = no UI at all
+    // /NORESTART = don't restart
+    // /NOCANCEL = prevent user from cancelling
+    // /SP- = skip "This will install..." prompt
+    let output = Command::new(&installer_path)
+        .args(["/VERYSILENT", "/NORESTART", "/NOCANCEL", "/SP-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run Git installer: {}", e))?;
+
+    // Clean up installer
+    let _ = std::fs::remove_file(&installer_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Git installer failed: {}", stderr));
+    }
+
+    // Verify installation
+    // Give it a moment to finish
+    sleep(Duration::from_secs(2)).await;
+
+    if let Some(git_path) = find_git_binary() {
+        let _ = send_message(&sender, OutgoingMessage::Progress {
+            id: request_id.clone(),
+            operation: "install_git".to_string(),
+            percent: Some(100),
+            message: "Git installed successfully!".to_string(),
+            bytes_downloaded: None,
+            bytes_total: None,
+        }).await;
+
+        Ok(json!({
+            "success": true,
+            "already_installed": false,
+            "git_path": git_path.to_string_lossy(),
+            "message": "Git installed successfully"
+        }))
+    } else {
+        Err("Git installation completed but git binary not found. You may need to restart the bootstrapper.".to_string())
+    }
 }
 
 /// Ensure Ollama is installed and running
@@ -968,6 +1598,7 @@ pub async fn start_braindrive(
 }
 
 /// Start the backend service
+#[cfg(not(target_os = "windows"))]
 async fn start_backend_service(backend_path: &PathBuf, port: u16) -> Result<Option<u32>, String> {
     // Create a shell script to run the backend with conda
     let script_content = format!(
@@ -996,7 +1627,6 @@ exec uvicorn main:app --host 0.0.0.0 --port {}
         .map_err(|e| format!("Failed to write startup script: {}", e))?;
 
     // Make it executable
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
@@ -1015,7 +1645,48 @@ exec uvicorn main:app --host 0.0.0.0 --port {}
     Ok(Some(pid))
 }
 
+/// Start the backend service on Windows
+#[cfg(target_os = "windows")]
+async fn start_backend_service(backend_path: &PathBuf, port: u16) -> Result<Option<u32>, String> {
+    // Create a batch script to run the backend with conda
+    let script_content = format!(
+        r#"@echo off
+cd /d "{}"
+call conda activate {}
+uvicorn main:app --host 0.0.0.0 --port {}
+"#,
+        backend_path.display(),
+        CONDA_ENV_NAME,
+        port
+    );
+
+    // Write the script to a temporary location
+    let script_dir = dirs::home_dir()
+        .ok_or("Could not determine home directory")?
+        .join(".braindrive-installer")
+        .join("scripts");
+
+    std::fs::create_dir_all(&script_dir)
+        .map_err(|e| format!("Failed to create scripts directory: {}", e))?;
+
+    let script_path = script_dir.join("start_backend.bat");
+    std::fs::write(&script_path, &script_content)
+        .map_err(|e| format!("Failed to write startup script: {}", e))?;
+
+    // Spawn the script using cmd.exe
+    let pid = spawn_detached(
+        "cmd.exe",
+        &["/C", script_path.to_str().unwrap()],
+        backend_path,
+        &[],
+    )
+    .await?;
+
+    Ok(Some(pid))
+}
+
 /// Start the frontend service
+#[cfg(not(target_os = "windows"))]
 async fn start_frontend_service(frontend_path: &PathBuf, port: u16) -> Result<Option<u32>, String> {
     // Create a shell script to run the frontend
     let script_content = format!(
@@ -1040,7 +1711,6 @@ exec npm run dev -- --host localhost --port {}
     std::fs::write(&script_path, &script_content)
         .map_err(|e| format!("Failed to write startup script: {}", e))?;
 
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
@@ -1050,6 +1720,43 @@ exec npm run dev -- --host localhost --port {}
     let pid = spawn_detached(
         "bash",
         &[script_path.to_str().unwrap()],
+        frontend_path,
+        &[],
+    )
+    .await?;
+
+    Ok(Some(pid))
+}
+
+/// Start the frontend service on Windows
+#[cfg(target_os = "windows")]
+async fn start_frontend_service(frontend_path: &PathBuf, port: u16) -> Result<Option<u32>, String> {
+    // Create a batch script to run the frontend
+    let script_content = format!(
+        r#"@echo off
+cd /d "{}"
+npm run dev -- --host localhost --port {}
+"#,
+        frontend_path.display(),
+        port
+    );
+
+    let script_dir = dirs::home_dir()
+        .ok_or("Could not determine home directory")?
+        .join(".braindrive-installer")
+        .join("scripts");
+
+    std::fs::create_dir_all(&script_dir)
+        .map_err(|e| format!("Failed to create scripts directory: {}", e))?;
+
+    let script_path = script_dir.join("start_frontend.bat");
+    std::fs::write(&script_path, &script_content)
+        .map_err(|e| format!("Failed to write startup script: {}", e))?;
+
+    // Spawn the script using cmd.exe
+    let pid = spawn_detached(
+        "cmd.exe",
+        &["/C", script_path.to_str().unwrap()],
         frontend_path,
         &[],
     )
@@ -1210,6 +1917,13 @@ async fn run_command(mut command: Command) -> Result<CommandOutput, String> {
 async fn run_shell_script(script: &str) -> Result<CommandOutput, String> {
     let mut command = Command::new("sh");
     command.arg("-c").arg(script);
+    run_command(command).await
+}
+
+#[cfg(target_os = "windows")]
+async fn run_shell_script(script: &str) -> Result<CommandOutput, String> {
+    let mut command = Command::new("cmd.exe");
+    command.arg("/C").arg(script);
     run_command(command).await
 }
 

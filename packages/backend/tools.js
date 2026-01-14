@@ -18,6 +18,24 @@ export const TOOLS = [
     },
   },
   {
+    name: 'install_conda',
+    description: 'Install Miniconda automatically if conda is not already installed. Downloads and installs Miniconda to ~/miniconda3 without requiring sudo or terminal access. Use this when detect_system shows conda_installed is false. Shows download progress in the UI.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'install_git',
+    description: 'Install Git automatically if not already installed. On macOS, triggers the Xcode Command Line Tools installation (native GUI dialog - user just clicks Install). On Windows, downloads and runs the Git installer silently. On Linux, returns instructions for manual installation (requires sudo). Use this when detect_system shows git_installed is false.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: 'install_conda_env',
     description: 'Create or update the audited BrainDrive conda environment. Provide the environment name and optionally a repo path/environment.yml override.',
     input_schema: {

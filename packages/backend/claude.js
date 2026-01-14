@@ -27,29 +27,39 @@ Follow this sequence once the bootstrapper is connected:
    - Look for: conda, git, node, ollama
    - Note: OS, architecture, available memory
 
-2. **Clone Repository** - Use \`clone_repo\` to download BrainDrive
+2. **Install Git if needed** - If git_installed is false, use \`install_git\`
+   - macOS: Opens a native dialog - user just clicks "Install"
+   - Windows: Automatically downloads and installs silently
+   - Linux: Returns manual instructions (needs sudo)
+
+3. **Install Conda if needed** - If conda_installed is false, use \`install_conda\`
+   - Automatically downloads and installs Miniconda
+   - No terminal or sudo required - fully automated!
+   - Shows download progress in the UI
+
+4. **Clone Repository** - Use \`clone_repo\` to download BrainDrive
    - Clones to ~/BrainDrive by default
    - Uses shallow clone for speed
 
-3. **Create Conda Environment** - Use \`create_conda_env\`
+5. **Create Conda Environment** - Use \`create_conda_env\`
    - Creates "BrainDriveDev" environment
    - Includes Python 3.11, Node.js, and git
 
-4. **Install Backend Dependencies** - Use \`install_backend_deps\`
+6. **Install Backend Dependencies** - Use \`install_backend_deps\`
    - Installs Python packages from requirements.txt
    - Runs in the conda environment
 
-5. **Install Frontend Dependencies** - Use \`install_frontend_deps\`
+7. **Install Frontend Dependencies** - Use \`install_frontend_deps\`
    - Runs npm install in the frontend directory
 
-6. **Setup Environment File** - Use \`setup_env_file\`
+8. **Setup Environment File** - Use \`setup_env_file\`
    - Copies .env-dev to .env
 
-7. **Start BrainDrive** - Use \`start_braindrive\`
+9. **Start BrainDrive** - Use \`start_braindrive\`
    - Starts backend on port 8005
    - Starts frontend on port 5173
 
-8. **Celebrate!** - Open BrainDrive in browser
+10. **Celebrate!** - Open BrainDrive in browser
 
 ## Pre-Bootstrapper Flow
 If the bootstrapper is NOT connected:
@@ -71,16 +81,20 @@ If the bootstrapper is NOT connected:
 - **start_braindrive is idempotent** - it will return success if already running, no need to retry
 
 ## Tool Behavior Notes
+- \`install_git\`: On macOS triggers Xcode CLI tools dialog (user clicks Install). On Windows downloads and installs silently. Returns \`already_installed: true\` if git exists. On macOS, waits for user to complete the dialog.
+- \`install_conda\`: Downloads and installs Miniconda automatically. Returns success with \`already_installed: true\` if conda is already present.
 - \`start_braindrive\`: Automatically finds available ports if defaults are taken. Returns success if already running.
 - \`clone_repo\`: Returns success with \`already_exists: true\` if repo exists.
 - \`create_conda_env\`: Returns success with \`already_exists: true\` if env exists.
 - \`setup_env_file\`: Returns success with \`already_exists: true\` if .env exists.
 
 ## Error Recovery
-- If conda not installed: Ask user to install from https://docs.conda.io/en/latest/miniconda.html
-- If git not installed: Ask user to install from https://git-scm.com/downloads
+- If git not installed: Use \`install_git\` - on macOS shows a simple dialog, on Windows installs silently
+- If conda not installed: Use \`install_conda\` to automatically install Miniconda (no user action needed!)
 - If start_braindrive fails: Check the error message - it includes log paths for debugging
 - If clone fails: Check internet connection, try again
+- If install_git fails on Linux: User needs to run sudo apt/dnf/pacman to install git manually
+- If install_conda fails: Check internet connection; may need to retry or ask user to install manually from https://docs.conda.io/en/latest/miniconda.html
 
 ## Conversation Style
 - Short paragraphs and bullet points
@@ -231,6 +245,24 @@ export class ClaudeClient {
             return systemInfo.data;
           }
           return { error: systemInfo.error || 'Failed to detect system' };
+
+        case 'install_conda': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          // Miniconda installation can take several minutes for download + install
+          const installCondaResult = await this.hub.callBootstrapperTool('install_conda', {}, 600000);
+          return installCondaResult.data || installCondaResult;
+        }
+
+        case 'install_git': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          // Git installation can take several minutes (especially on macOS where user needs to click Install)
+          const installGitResult = await this.hub.callBootstrapperTool('install_git', {}, 660000);
+          return installGitResult.data || installGitResult;
+        }
 
         case 'install_conda_env': {
           if (!this.hub.isBootstrapperConnected()) {

@@ -16,6 +16,12 @@ pub enum IncomingMessage {
     #[serde(rename = "detect_system")]
     DetectSystem { id: String },
 
+    #[serde(rename = "install_conda")]
+    InstallConda { id: String },
+
+    #[serde(rename = "install_git")]
+    InstallGit { id: String },
+
     #[serde(rename = "install_conda_env")]
     InstallCondaEnv {
         id: String,
@@ -256,6 +262,18 @@ async fn handle_incoming_message(
     match message {
         IncomingMessage::DetectSystem { id } => {
             let result = dispatcher::detect_system().await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::InstallConda { id } => {
+            app.emit("command-executing", "Installing Miniconda").ok();
+            let result = dispatcher::install_conda(id.clone(), sender.clone()).await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::InstallGit { id } => {
+            app.emit("command-executing", "Installing Git").ok();
+            let result = dispatcher::install_git(id.clone(), sender.clone()).await;
             send_tool_result(sender, id, result).await;
         }
 
