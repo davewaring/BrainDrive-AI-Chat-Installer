@@ -24,9 +24,11 @@ pub struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
+        let default_url = std::env::var("BRAINDRIVE_BACKEND_URL")
+            .unwrap_or_else(|_| "wss://api-install.braindrive.ai/ws".to_string());
         Self {
             ws_connected: Arc::new(Mutex::new(false)),
-            backend_url: Arc::new(Mutex::new("ws://localhost:3000/ws".to_string())),
+            backend_url: Arc::new(Mutex::new(default_url)),
             ws_sender: Arc::new(Mutex::new(None)),
             process_state: process_manager::new_process_state(),
         }
