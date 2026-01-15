@@ -3,19 +3,95 @@
 //! Features:
 //! - Structured JSON logging with timestamps
 //! - Automatic log rotation (keeps last 7 days)
-//! - Secret redaction (API keys, passwords, tokens)
+//! - Secret redaction at write-time (API keys, passwords, tokens)
 //! - Export functionality for sharing logs with support
 
 use regex::Regex;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::sync::OnceLock;
-use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use std::sync::{Arc, Mutex, OnceLock};
+use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Global regex patterns for secret redaction
 static SECRET_PATTERNS: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
+
+/// A writer that redacts secrets before writing to the underlying file
+struct RedactingFileWriter {
+    file: Arc<Mutex<File>>,
+    buffer: Vec<u8>,
+}
+
+impl Write for RedactingFileWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // Buffer the input
+        self.buffer.extend_from_slice(buf);
+
+        // Check if we have a complete line (ends with newline)
+        if let Some(newline_pos) = self.buffer.iter().rposition(|&b| b == b'\n') {
+            // Process complete lines
+            let to_write = self.buffer[..=newline_pos].to_vec();
+            self.buffer = self.buffer[newline_pos + 1..].to_vec();
+
+            if let Ok(s) = std::str::from_utf8(&to_write) {
+                let redacted = redact_secrets_internal(s);
+                if let Ok(mut file) = self.file.lock() {
+                    file.write_all(redacted.as_bytes())?;
+                }
+            } else {
+                // If not valid UTF-8, write as-is
+                if let Ok(mut file) = self.file.lock() {
+                    file.write_all(&to_write)?;
+                }
+            }
+        }
+
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        // Flush any remaining buffer
+        if !self.buffer.is_empty() {
+            if let Ok(s) = std::str::from_utf8(&self.buffer) {
+                let redacted = redact_secrets_internal(s);
+                if let Ok(mut file) = self.file.lock() {
+                    file.write_all(redacted.as_bytes())?;
+                    file.flush()?;
+                }
+            }
+            self.buffer.clear();
+        } else if let Ok(mut file) = self.file.lock() {
+            file.flush()?;
+        }
+        Ok(())
+    }
+}
+
+/// A MakeWriter that creates redacting file writers
+#[derive(Clone)]
+struct RedactingMakeWriter {
+    file: Arc<Mutex<File>>,
+}
+
+impl RedactingMakeWriter {
+    fn new(file: File) -> Self {
+        Self {
+            file: Arc::new(Mutex::new(file)),
+        }
+    }
+}
+
+impl<'a> MakeWriter<'a> for RedactingMakeWriter {
+    type Writer = RedactingFileWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        RedactingFileWriter {
+            file: Arc::clone(&self.file),
+            buffer: Vec::new(),
+        }
+    }
+}
 
 /// Get the log directory path
 pub fn get_log_dir() -> PathBuf {
@@ -25,19 +101,38 @@ pub fn get_log_dir() -> PathBuf {
         .join("logs")
 }
 
+/// Get the current log file path (with date suffix for rotation)
+fn get_current_log_path() -> PathBuf {
+    let log_dir = get_log_dir();
+    let date = chrono::Local::now().format("%Y-%m-%d");
+    log_dir.join(format!("installer.log.{}", date))
+}
+
 /// Initialize the logging system
 /// Should be called once at application startup
 pub fn init_logging() -> Result<(), String> {
+    // Initialize secret patterns FIRST, before any logging happens
+    // This ensures redaction works from the very first log message
+    init_secret_patterns();
+
     let log_dir = get_log_dir();
 
     // Create log directory if it doesn't exist
     fs::create_dir_all(&log_dir)
         .map_err(|e| format!("Failed to create log directory: {}", e))?;
 
-    // Create a rolling file appender (rotates daily, keeps files with date suffix)
-    let file_appender = RollingFileAppender::new(Rotation::DAILY, &log_dir, "installer.log");
+    // Open log file for appending (create if doesn't exist)
+    let log_path = get_current_log_path();
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("Failed to open log file: {}", e))?;
 
-    // Build the subscriber with both console and file output
+    // Create our redacting writer
+    let redacting_writer = RedactingMakeWriter::new(file);
+
+    // Build the subscriber with redacting file output
     let subscriber = tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(
@@ -47,16 +142,13 @@ pub fn init_logging() -> Result<(), String> {
                 .with_file(true)
                 .with_line_number(true)
                 .json()
-                .with_writer(file_appender),
+                .with_writer(redacting_writer),
         );
 
     // Set as the global default
     subscriber
         .try_init()
         .map_err(|e| format!("Failed to initialize logging: {}", e))?;
-
-    // Initialize secret patterns
-    init_secret_patterns();
 
     tracing::info!(
         log_dir = %log_dir.display(),
@@ -66,68 +158,90 @@ pub fn init_logging() -> Result<(), String> {
     Ok(())
 }
 
+/// Create the secret redaction patterns
+fn create_secret_patterns() -> Vec<(Regex, &'static str)> {
+    vec![
+        // API keys (various formats)
+        (
+            Regex::new(r#"(?i)(api[_-]?key|apikey)[=:\s]+['"]?([a-zA-Z0-9_-]{20,})['"]?"#)
+                .unwrap(),
+            "$1=[REDACTED]",
+        ),
+        // Anthropic API keys
+        (
+            Regex::new(r"sk-ant-[a-zA-Z0-9_-]{20,}").unwrap(),
+            "[REDACTED_ANTHROPIC_KEY]",
+        ),
+        // OpenAI API keys
+        (
+            Regex::new(r"sk-[a-zA-Z0-9]{20,}").unwrap(),
+            "[REDACTED_OPENAI_KEY]",
+        ),
+        // Generic secrets/tokens
+        (
+            Regex::new(r#"(?i)(secret|token|password|passwd|pwd)[=:\s]+['"]?([^\s'"]{8,})['"]?"#)
+                .unwrap(),
+            "$1=[REDACTED]",
+        ),
+        // Bearer tokens
+        (
+            Regex::new(r"(?i)bearer\s+[a-zA-Z0-9_.-]{20,}").unwrap(),
+            "Bearer [REDACTED]",
+        ),
+        // Authorization headers
+        (
+            Regex::new(r#"(?i)authorization[=:\s]+['"]?[^\s'"]{20,}['"]?"#).unwrap(),
+            "Authorization: [REDACTED]",
+        ),
+        // Environment variable assignments with sensitive names
+        (
+            Regex::new(
+                r"(?i)(ANTHROPIC_API_KEY|OPENAI_API_KEY|DATABASE_URL|SECRET_KEY|PRIVATE_KEY)[=][^\s]{8,}",
+            )
+            .unwrap(),
+            "$1=[REDACTED]",
+        ),
+        // Connection strings
+        (
+            Regex::new(r"(?i)(mongodb|postgres|mysql|redis)://[^\s]+@[^\s]+").unwrap(),
+            "$1://[REDACTED]@[REDACTED]",
+        ),
+        // SSH private key markers
+        (
+            Regex::new(r"-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?-----END[^-]*PRIVATE KEY-----")
+                .unwrap(),
+            "[REDACTED_PRIVATE_KEY]",
+        ),
+    ]
+}
+
 /// Initialize the secret redaction patterns
 fn init_secret_patterns() {
-    SECRET_PATTERNS.get_or_init(|| {
-        vec![
-            // API keys (various formats)
-            (
-                Regex::new(r#"(?i)(api[_-]?key|apikey)[=:\s]+['"]?([a-zA-Z0-9_-]{20,})['"]?"#)
-                    .unwrap(),
-                "$1=[REDACTED]",
-            ),
-            // Anthropic API keys
-            (
-                Regex::new(r"sk-ant-[a-zA-Z0-9_-]{20,}").unwrap(),
-                "[REDACTED_ANTHROPIC_KEY]",
-            ),
-            // OpenAI API keys
-            (
-                Regex::new(r"sk-[a-zA-Z0-9]{20,}").unwrap(),
-                "[REDACTED_OPENAI_KEY]",
-            ),
-            // Generic secrets/tokens
-            (
-                Regex::new(r#"(?i)(secret|token|password|passwd|pwd)[=:\s]+['"]?([^\s'"]{8,})['"]?"#)
-                    .unwrap(),
-                "$1=[REDACTED]",
-            ),
-            // Bearer tokens
-            (
-                Regex::new(r"(?i)bearer\s+[a-zA-Z0-9_.-]{20,}").unwrap(),
-                "Bearer [REDACTED]",
-            ),
-            // Authorization headers
-            (
-                Regex::new(r#"(?i)authorization[=:\s]+['"]?[^\s'"]{20,}['"]?"#).unwrap(),
-                "Authorization: [REDACTED]",
-            ),
-            // Environment variable assignments with sensitive names
-            (
-                Regex::new(
-                    r"(?i)(ANTHROPIC_API_KEY|OPENAI_API_KEY|DATABASE_URL|SECRET_KEY|PRIVATE_KEY)[=][^\s]{8,}",
-                )
-                .unwrap(),
-                "$1=[REDACTED]",
-            ),
-            // Connection strings
-            (
-                Regex::new(r"(?i)(mongodb|postgres|mysql|redis)://[^\s]+@[^\s]+").unwrap(),
-                "$1://[REDACTED]@[REDACTED]",
-            ),
-            // SSH private key markers
-            (
-                Regex::new(r"-----BEGIN[^-]*PRIVATE KEY-----[\s\S]*?-----END[^-]*PRIVATE KEY-----")
-                    .unwrap(),
-                "[REDACTED_PRIVATE_KEY]",
-            ),
-        ]
-    });
+    SECRET_PATTERNS.get_or_init(create_secret_patterns);
+}
+
+/// Internal redaction function that handles uninitialized patterns gracefully
+/// Used by the RedactingWriter which may be called before full initialization
+fn redact_secrets_internal(input: &str) -> String {
+    // If patterns aren't initialized yet, return input as-is
+    // This should rarely happen since we init patterns first in init_logging
+    let Some(patterns) = SECRET_PATTERNS.get() else {
+        return input.to_string();
+    };
+
+    let mut result = input.to_string();
+    for (pattern, replacement) in patterns {
+        result = pattern.replace_all(&result, *replacement).to_string();
+    }
+    result
 }
 
 /// Redact secrets from a string
+/// Safe to call even if logging wasn't initialized - will initialize patterns on first call
 pub fn redact_secrets(input: &str) -> String {
-    let patterns = SECRET_PATTERNS.get().expect("Secret patterns not initialized");
+    // Use get_or_init to ensure patterns are always available
+    // This prevents panics if someone calls redact_secrets before init_logging
+    let patterns = SECRET_PATTERNS.get_or_init(|| create_secret_patterns());
     let mut result = input.to_string();
 
     for (pattern, replacement) in patterns {
@@ -162,8 +276,13 @@ pub fn cleanup_old_logs(keep_days: u32) -> Result<usize, String> {
     for entry in entries.flatten() {
         let path = entry.path();
 
-        // Only process .log files
-        if path.extension().map_or(false, |ext| ext == "log") {
+        // Process log files (installer.log and rotated files like installer.log.2026-01-15)
+        let is_log_file = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map_or(false, |name| name.starts_with("installer.log"));
+
+        if is_log_file {
             if let Ok(metadata) = fs::metadata(&path) {
                 if let Ok(modified) = metadata.modified() {
                     let modified_time: chrono::DateTime<chrono::Utc> = modified.into();
@@ -202,11 +321,16 @@ pub fn export_logs_for_sharing(lines_limit: Option<usize>) -> Result<PathBuf, St
         .map_err(|e| format!("Failed to create export directory: {}", e))?;
 
     // Find all log files and sort by modification time (newest first)
+    // Matches installer.log and rotated files like installer.log.2026-01-15
     let mut log_files: Vec<PathBuf> = fs::read_dir(&log_dir)
         .map_err(|e| format!("Failed to read log directory: {}", e))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "log"))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map_or(false, |name| name.starts_with("installer.log"))
+        })
         .collect();
 
     log_files.sort_by(|a, b| {
@@ -284,11 +408,16 @@ pub fn get_recent_events(count: usize) -> Result<Vec<String>, String> {
     let log_dir = get_log_dir();
 
     // Find the most recent log file
+    // Matches installer.log and rotated files like installer.log.2026-01-15
     let mut log_files: Vec<PathBuf> = fs::read_dir(&log_dir)
         .map_err(|e| format!("Failed to read log directory: {}", e))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "log"))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map_or(false, |name| name.starts_with("installer.log"))
+        })
         .collect();
 
     log_files.sort_by(|a, b| {
