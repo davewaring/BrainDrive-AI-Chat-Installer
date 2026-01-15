@@ -1393,6 +1393,64 @@ pub async fn install_frontend_deps(repo_path: Option<String>) -> Result<Value, S
     }))
 }
 
+/// Install both backend and frontend dependencies in parallel
+/// This saves ~1-1.5 minutes compared to sequential installation
+pub async fn install_all_deps(
+    env_name: Option<String>,
+    repo_path: Option<String>,
+) -> Result<Value, String> {
+    // Clone the values for the parallel tasks
+    let env_name_backend = env_name.clone();
+    let repo_path_backend = repo_path.clone();
+    let repo_path_frontend = repo_path;
+
+    // Run both installations in parallel
+    let (backend_result, frontend_result) = tokio::join!(
+        install_backend_deps(env_name_backend, repo_path_backend),
+        install_frontend_deps(repo_path_frontend)
+    );
+
+    // Process results
+    let backend_success = backend_result.as_ref().map(|v| {
+        v.get("success").and_then(|s| s.as_bool()).unwrap_or(false)
+    }).unwrap_or(false);
+
+    let frontend_success = frontend_result.as_ref().map(|v| {
+        v.get("success").and_then(|s| s.as_bool()).unwrap_or(false)
+    }).unwrap_or(false);
+
+    let overall_success = backend_success && frontend_success;
+
+    // Build detailed response
+    let backend_data = match backend_result {
+        Ok(data) => data,
+        Err(e) => json!({ "success": false, "error": e }),
+    };
+
+    let frontend_data = match frontend_result {
+        Ok(data) => data,
+        Err(e) => json!({ "success": false, "error": e }),
+    };
+
+    let message = if overall_success {
+        "Both backend and frontend dependencies installed successfully"
+    } else if backend_success {
+        "Backend dependencies installed, but frontend failed"
+    } else if frontend_success {
+        "Frontend dependencies installed, but backend failed"
+    } else {
+        "Both backend and frontend dependency installations failed"
+    };
+
+    Ok(json!({
+        "success": overall_success,
+        "message": message,
+        "parallel": true,
+        "backend": backend_data,
+        "frontend": frontend_data
+    }))
+}
+
 /// Setup the environment file by copying .env-dev to .env
 pub async fn setup_env_file(repo_path: Option<String>) -> Result<Value, String> {
     let repo = resolve_repo_path_or_default(repo_path)?;

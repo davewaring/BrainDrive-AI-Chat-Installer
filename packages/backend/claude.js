@@ -46,21 +46,20 @@ Follow this sequence once the bootstrapper is connected:
    - Creates "BrainDriveDev" environment
    - Includes Python 3.11, Node.js, and git
 
-6. **Install Backend Dependencies** - Use \`install_backend_deps\`
-   - Installs Python packages from requirements.txt
-   - Runs in the conda environment
+6. **Install All Dependencies** - Use \`install_all_deps\`
+   - Installs both backend and frontend dependencies IN PARALLEL
+   - This is faster than installing them separately (~1-1.5 min saved)
+   - Backend: Python packages from requirements.txt in conda env
+   - Frontend: npm install in the frontend directory
 
-7. **Install Frontend Dependencies** - Use \`install_frontend_deps\`
-   - Runs npm install in the frontend directory
-
-8. **Setup Environment File** - Use \`setup_env_file\`
+7. **Setup Environment File** - Use \`setup_env_file\`
    - Copies .env-dev to .env
 
-9. **Start BrainDrive** - Use \`start_braindrive\`
+8. **Start BrainDrive** - Use \`start_braindrive\`
    - Starts backend on port 8005
    - Starts frontend on port 5173
 
-10. **Celebrate!** - Open BrainDrive in browser
+9. **Celebrate!** - Open BrainDrive in browser
 
 ## Pre-Bootstrapper Flow
 If the bootstrapper is NOT connected:
@@ -87,6 +86,7 @@ If the bootstrapper is NOT connected:
 - \`start_braindrive\`: Automatically finds available ports if defaults are taken. Returns success if already running.
 - \`clone_repo\`: Returns success with \`already_exists: true\` if repo exists.
 - \`create_conda_env\`: Returns success with \`already_exists: true\` if env exists.
+- \`install_all_deps\`: Runs backend and frontend dependency installation IN PARALLEL. Returns detailed results for both. Preferred over separate install_backend_deps + install_frontend_deps calls.
 - \`setup_env_file\`: Returns success with \`already_exists: true\` if .env exists.
 
 ## Error Recovery
@@ -399,6 +399,25 @@ export class ClaudeClient {
           }
           const frontendDepsResult = await this.hub.callBootstrapperTool('install_frontend_deps', payload, 300000);
           return frontendDepsResult.data || frontendDepsResult;
+        }
+
+        case 'install_all_deps': {
+          if (!this.hub.isBootstrapperConnected()) {
+            return { error: 'Bootstrapper not connected' };
+          }
+          const payload = {};
+          if (input.env_name) {
+            if (!/^[A-Za-z0-9_-]+$/.test(input.env_name)) {
+              return { error: 'Environment name may only include letters, numbers, "-", and "_"' };
+            }
+            payload.env_name = input.env_name;
+          }
+          if (input.repo_path) {
+            payload.repo_path = input.repo_path;
+          }
+          // Longer timeout since this runs both in parallel but we wait for both to complete
+          const allDepsResult = await this.hub.callBootstrapperTool('install_all_deps', payload, 600000);
+          return allDepsResult.data || allDepsResult;
         }
 
         case 'setup_env_file': {

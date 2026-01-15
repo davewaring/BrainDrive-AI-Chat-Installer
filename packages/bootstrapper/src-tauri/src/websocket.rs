@@ -83,6 +83,15 @@ pub enum IncomingMessage {
         repo_path: Option<String>,
     },
 
+    #[serde(rename = "install_all_deps")]
+    InstallAllDeps {
+        id: String,
+        #[serde(default)]
+        env_name: Option<String>,
+        #[serde(default)]
+        repo_path: Option<String>,
+    },
+
     #[serde(rename = "setup_env_file")]
     SetupEnvFile {
         id: String,
@@ -354,6 +363,16 @@ async fn handle_incoming_message(
         IncomingMessage::InstallFrontendDeps { id, repo_path } => {
             app.emit("command-executing", "Installing frontend dependencies").ok();
             let result = dispatcher::install_frontend_deps(repo_path).await;
+            send_tool_result(sender, id, result).await;
+        }
+
+        IncomingMessage::InstallAllDeps {
+            id,
+            env_name,
+            repo_path,
+        } => {
+            app.emit("command-executing", "Installing all dependencies (parallel)").ok();
+            let result = dispatcher::install_all_deps(env_name, repo_path).await;
             send_tool_result(sender, id, result).await;
         }
 

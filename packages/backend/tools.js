@@ -176,6 +176,24 @@ export const TOOLS = [
     },
   },
   {
+    name: 'install_all_deps',
+    description: 'Install both backend and frontend dependencies in parallel. This is faster than calling install_backend_deps and install_frontend_deps separately, saving ~1-1.5 minutes. Use this after creating the conda env and cloning the repo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        env_name: {
+          type: 'string',
+          description: 'Conda environment name (defaults to BrainDriveDev)',
+        },
+        repo_path: {
+          type: 'string',
+          description: 'Path to the BrainDrive repo (defaults to ~/BrainDrive)',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'setup_env_file',
     description: 'Set up the backend .env configuration file by copying .env-dev to .env. Run this before starting BrainDrive.',
     input_schema: {
