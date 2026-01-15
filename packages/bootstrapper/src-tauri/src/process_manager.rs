@@ -321,14 +321,35 @@ const DEFAULT_REPO_DIR: &str = "BrainDrive";
 const ISOLATED_MINICONDA_DIR: &str = "miniconda3";
 
 /// Get the path to the isolated conda installation (~/BrainDrive/miniconda3)
+/// Only returns the path if the installation is valid (has conda binary and conda.sh)
 fn get_isolated_conda_base() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let isolated_path = home.join(DEFAULT_REPO_DIR).join(ISOLATED_MINICONDA_DIR);
-    if isolated_path.exists() {
-        Some(isolated_path)
-    } else {
-        None
+
+    if !isolated_path.exists() {
+        return None;
     }
+
+    // Validate the installation is complete by checking for required files
+    #[cfg(unix)]
+    {
+        let conda_binary = isolated_path.join("bin/conda");
+        let conda_sh = isolated_path.join("etc/profile.d/conda.sh");
+        if conda_binary.exists() && conda_sh.exists() {
+            return Some(isolated_path);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let conda_binary = isolated_path.join("Scripts/conda.exe");
+        if conda_binary.exists() {
+            return Some(isolated_path);
+        }
+    }
+
+    // Directory exists but installation is incomplete/corrupted
+    None
 }
 
 /// Get the conda base path
@@ -378,16 +399,17 @@ pub fn get_conda_base_from_binary(conda_path: &PathBuf) -> Option<PathBuf> {
 
 /// Build the shell command to run something in a conda environment
 /// Uses the isolated conda installation if available
+/// NOTE: After sourcing conda.sh, we use the `conda` shell function for activation,
+/// NOT the binary directly. The shell function properly handles environment activation.
 #[cfg(unix)]
 pub fn conda_run_command(env_name: &str, command: &str) -> String {
-    // Source conda.sh to ensure conda is available, then run the command
+    // Source conda.sh to ensure conda shell function is available, then activate
     if let Some(conda_base) = get_conda_base() {
         let conda_sh = conda_base.join("etc/profile.d/conda.sh");
-        let conda_bin = conda_base.join("bin/conda");
+        // Use 'conda' shell function (not binary) after sourcing conda.sh
         format!(
-            "source \"{}\" && \"{}\" activate {} && {}",
+            "source \"{}\" && conda activate {} && {}",
             conda_sh.display(),
-            conda_bin.display(),
             env_name,
             command
         )
@@ -401,6 +423,7 @@ pub fn conda_run_command(env_name: &str, command: &str) -> String {
 pub fn conda_run_command(env_name: &str, command: &str) -> String {
     if let Some(conda_base) = get_conda_base() {
         let conda_bin = conda_base.join("Scripts/conda.exe");
+        // On Windows, use conda run which handles activation properly
         format!("\"{}\" run -n {} {}", conda_bin.display(), env_name, command)
     } else {
         format!("conda run -n {} {}", env_name, command)
@@ -408,14 +431,16 @@ pub fn conda_run_command(env_name: &str, command: &str) -> String {
 }
 
 /// Build the shell command to run something in a conda environment using a specific conda binary
+/// NOTE: After sourcing conda.sh, we use the `conda` shell function for activation,
+/// NOT the binary directly. The shell function properly handles environment activation.
 #[cfg(unix)]
 pub fn conda_run_command_with_path(conda_path: &PathBuf, env_name: &str, command: &str) -> String {
     if let Some(conda_base) = get_conda_base_from_binary(conda_path) {
         let conda_sh = conda_base.join("etc/profile.d/conda.sh");
+        // Use 'conda' shell function (not binary) after sourcing conda.sh
         format!(
-            "source \"{}\" && \"{}\" activate {} && {}",
+            "source \"{}\" && conda activate {} && {}",
             conda_sh.display(),
-            conda_path.display(),
             env_name,
             command
         )
@@ -427,5 +452,6 @@ pub fn conda_run_command_with_path(conda_path: &PathBuf, env_name: &str, command
 
 #[cfg(windows)]
 pub fn conda_run_command_with_path(conda_path: &PathBuf, env_name: &str, command: &str) -> String {
+    // On Windows, use conda run which handles activation properly
     format!("\"{}\" run -n {} {}", conda_path.display(), env_name, command)
 }

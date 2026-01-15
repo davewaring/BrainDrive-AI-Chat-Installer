@@ -66,20 +66,29 @@ fn get_isolated_miniconda_dir() -> Option<PathBuf> {
 
 /// Get the path to the isolated conda binary
 /// Returns the full path to conda binary in ~/BrainDrive/miniconda3/bin/conda
+/// Only returns the path if the installation is valid (has conda binary and conda.sh on Unix)
 fn get_isolated_conda_binary() -> Option<PathBuf> {
     let miniconda_dir = get_isolated_miniconda_dir()?;
 
     #[cfg(target_os = "windows")]
-    let conda_binary = miniconda_dir.join("Scripts").join("conda.exe");
+    {
+        let conda_binary = miniconda_dir.join("Scripts").join("conda.exe");
+        if conda_binary.exists() {
+            return Some(conda_binary);
+        }
+    }
 
     #[cfg(not(target_os = "windows"))]
-    let conda_binary = miniconda_dir.join("bin").join("conda");
-
-    if conda_binary.exists() {
-        Some(conda_binary)
-    } else {
-        None
+    {
+        let conda_binary = miniconda_dir.join("bin").join("conda");
+        let conda_sh = miniconda_dir.join("etc/profile.d/conda.sh");
+        // Validate both binary and conda.sh exist for a complete installation
+        if conda_binary.exists() && conda_sh.exists() {
+            return Some(conda_binary);
+        }
     }
+
+    None
 }
 
 /// Check if isolated conda is installed in ~/BrainDrive/miniconda3
@@ -1241,6 +1250,7 @@ fn parse_size_to_bytes(value: &str, unit: &str) -> Option<u64> {
 }
 
 /// Clone the BrainDrive repository
+/// Handles the case where ~/BrainDrive already exists with miniconda3 (from install_conda)
 pub async fn clone_repo(repo_url: Option<String>, target_path: Option<String>) -> Result<Value, String> {
     ensure_command_available("git")?;
 
@@ -1261,6 +1271,14 @@ pub async fn clone_repo(repo_url: Option<String>, target_path: Option<String>) -
         None => home.join(DEFAULT_REPO_DIR),
     };
 
+    // Default to BrainDrive-Core repo
+    let url = repo_url.unwrap_or_else(|| "https://github.com/BrainDriveAI/BrainDrive.git".to_string());
+
+    // Validate URL format (basic check)
+    if !url.starts_with("https://") && !url.starts_with("git@") {
+        return Err("Repository URL must start with https:// or git@".to_string());
+    }
+
     // Check if already exists
     if target.exists() {
         if target.join(".git").exists() {
@@ -1270,22 +1288,24 @@ pub async fn clone_repo(repo_url: Option<String>, target_path: Option<String>) -
                 "path": target.to_string_lossy(),
                 "already_exists": true
             }));
+        }
+
+        // Check if directory only contains installer artifacts (miniconda3, .braindrive-installer)
+        // If so, we can clone into it using git init + fetch approach
+        let has_only_installer_artifacts = check_only_installer_artifacts(&target);
+
+        if has_only_installer_artifacts {
+            // Use git init + fetch + checkout approach for existing directory
+            return clone_into_existing_dir(&target, &url).await;
         } else {
             return Err(format!(
-                "Directory {} exists but is not a git repository",
+                "Directory {} exists but is not a git repository and contains non-installer files",
                 target.display()
             ));
         }
     }
 
-    // Default to BrainDrive-Core repo
-    let url = repo_url.unwrap_or_else(|| "https://github.com/BrainDriveAI/BrainDrive.git".to_string());
-
-    // Validate URL format (basic check)
-    if !url.starts_with("https://") && !url.starts_with("git@") {
-        return Err("Repository URL must start with https:// or git@".to_string());
-    }
-
+    // Standard clone for non-existing directory
     let mut command = Command::new("git");
     command
         .arg("clone")
@@ -1303,6 +1323,92 @@ pub async fn clone_repo(repo_url: Option<String>, target_path: Option<String>) -
         "stderr": result.stderr,
         "path": target.to_string_lossy(),
         "url": url
+    }))
+}
+
+/// Check if a directory only contains installer artifacts (miniconda3, .braindrive-installer)
+fn check_only_installer_artifacts(dir: &PathBuf) -> bool {
+    let allowed_names = ["miniconda3", ".braindrive-installer"];
+
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if !allowed_names.contains(&name_str.as_ref()) {
+                    return false;
+                }
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Clone into an existing directory that contains only installer artifacts
+/// Uses git init + fetch + checkout approach
+async fn clone_into_existing_dir(target: &PathBuf, url: &str) -> Result<Value, String> {
+    // Initialize git repo
+    let mut init_cmd = Command::new("git");
+    init_cmd.arg("init").current_dir(target);
+    let init_result = run_command(init_cmd).await?;
+    if !init_result.success {
+        return Err(format!("Failed to initialize git repository: {}", init_result.stderr));
+    }
+
+    // Add remote origin
+    let mut remote_cmd = Command::new("git");
+    remote_cmd
+        .args(["remote", "add", "origin", url])
+        .current_dir(target);
+    let remote_result = run_command(remote_cmd).await?;
+    if !remote_result.success {
+        return Err(format!("Failed to add remote: {}", remote_result.stderr));
+    }
+
+    // Fetch with depth 1
+    let mut fetch_cmd = Command::new("git");
+    fetch_cmd
+        .args(["fetch", "--depth", "1", "origin", "main"])
+        .current_dir(target);
+    let fetch_result = run_command(fetch_cmd).await?;
+    if !fetch_result.success {
+        // Try 'master' branch if 'main' doesn't exist
+        let mut fetch_master = Command::new("git");
+        fetch_master
+            .args(["fetch", "--depth", "1", "origin", "master"])
+            .current_dir(target);
+        let fetch_master_result = run_command(fetch_master).await?;
+        if !fetch_master_result.success {
+            return Err(format!("Failed to fetch repository: {}", fetch_result.stderr));
+        }
+        // Checkout master
+        let mut checkout_cmd = Command::new("git");
+        checkout_cmd
+            .args(["checkout", "-b", "master", "origin/master"])
+            .current_dir(target);
+        let checkout_result = run_command(checkout_cmd).await?;
+        if !checkout_result.success {
+            return Err(format!("Failed to checkout: {}", checkout_result.stderr));
+        }
+    } else {
+        // Checkout main
+        let mut checkout_cmd = Command::new("git");
+        checkout_cmd
+            .args(["checkout", "-b", "main", "origin/main"])
+            .current_dir(target);
+        let checkout_result = run_command(checkout_cmd).await?;
+        if !checkout_result.success {
+            return Err(format!("Failed to checkout: {}", checkout_result.stderr));
+        }
+    }
+
+    Ok(json!({
+        "success": true,
+        "message": "BrainDrive repository cloned into existing directory",
+        "path": target.to_string_lossy(),
+        "url": url,
+        "method": "init_fetch_checkout"
     }))
 }
 
