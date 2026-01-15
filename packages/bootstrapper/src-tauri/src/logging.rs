@@ -161,18 +161,56 @@ pub fn init_logging() -> Result<(), String> {
 /// Create the secret redaction patterns
 fn create_secret_patterns() -> Vec<(Regex, &'static str)> {
     vec![
+        // === JSON FORMAT PATTERNS (for structured logging output) ===
+        // These must come first to match the JSON output format: "key":"value"
+
+        // JSON: Anthropic API keys in any field
+        (
+            Regex::new(r#""([^"]+)"\s*:\s*"(sk-ant-[a-zA-Z0-9_-]{20,})""#).unwrap(),
+            "\"$1\":\"[REDACTED_ANTHROPIC_KEY]\"",
+        ),
+        // JSON: OpenAI API keys in any field
+        (
+            Regex::new(r#""([^"]+)"\s*:\s*"(sk-[a-zA-Z0-9]{20,})""#).unwrap(),
+            "\"$1\":\"[REDACTED_OPENAI_KEY]\"",
+        ),
+        // JSON: Sensitive field names with any value (password, secret, token, etc.)
+        // Note: api_key/apikey excluded here - handled by specific API key patterns above
+        // Values starting with [ are excluded to avoid re-redacting [REDACTED...] markers
+        (
+            Regex::new(r#"(?i)"(password|passwd|pwd|secret|token|auth|credential|private_?key)"\s*:\s*"([^\["][^"]{7,})""#).unwrap(),
+            "\"$1\":\"[REDACTED]\"",
+        ),
+        // JSON: Environment variable names as keys
+        (
+            Regex::new(r#"(?i)"(ANTHROPIC_API_KEY|OPENAI_API_KEY|DATABASE_URL|SECRET_KEY|PRIVATE_KEY|AUTH_TOKEN)"\s*:\s*"([^"]+)""#).unwrap(),
+            "\"$1\":\"[REDACTED]\"",
+        ),
+        // JSON: Bearer tokens in values
+        (
+            Regex::new(r#""([^"]+)"\s*:\s*"(Bearer\s+[a-zA-Z0-9_.-]{20,})""#).unwrap(),
+            "\"$1\":\"Bearer [REDACTED]\"",
+        ),
+        // JSON: Connection strings in values
+        (
+            Regex::new(r#""([^"]+)"\s*:\s*"((mongodb|postgres|mysql|redis)://[^"]+@[^"]+)""#).unwrap(),
+            "\"$1\":\"$3://[REDACTED]\"",
+        ),
+
+        // === PLAIN TEXT PATTERNS (for non-JSON contexts, env files, etc.) ===
+
         // API keys (various formats)
         (
             Regex::new(r#"(?i)(api[_-]?key|apikey)[=:\s]+['"]?([a-zA-Z0-9_-]{20,})['"]?"#)
                 .unwrap(),
             "$1=[REDACTED]",
         ),
-        // Anthropic API keys
+        // Anthropic API keys (standalone)
         (
             Regex::new(r"sk-ant-[a-zA-Z0-9_-]{20,}").unwrap(),
             "[REDACTED_ANTHROPIC_KEY]",
         ),
-        // OpenAI API keys
+        // OpenAI API keys (standalone)
         (
             Regex::new(r"sk-[a-zA-Z0-9]{20,}").unwrap(),
             "[REDACTED_OPENAI_KEY]",
@@ -480,5 +518,61 @@ mod tests {
         let redacted = redact_secrets(input);
         assert!(redacted.contains("[REDACTED]"));
         assert!(!redacted.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
+    }
+
+    // === JSON FORMAT TESTS ===
+
+    #[test]
+    fn test_redact_json_password_field() {
+        init_secret_patterns();
+        let input = r#"{"level":"INFO","fields":{"password":"mysecretpassword123"}}"#;
+        let redacted = redact_secrets(input);
+        assert!(redacted.contains(r#""password":"[REDACTED]""#));
+        assert!(!redacted.contains("mysecretpassword123"));
+    }
+
+    #[test]
+    fn test_redact_json_api_key_field() {
+        init_secret_patterns();
+        let input = r#"{"level":"INFO","fields":{"api_key":"sk-ant-api03-abc123xyz789defghijklmnop"}}"#;
+        let redacted = redact_secrets(input);
+        assert!(redacted.contains("[REDACTED_ANTHROPIC_KEY]"));
+        assert!(!redacted.contains("sk-ant-api03"));
+    }
+
+    #[test]
+    fn test_redact_json_openai_key() {
+        init_secret_patterns();
+        let input = r#"{"config":{"openai_key":"sk-abcdefghij1234567890abcd"}}"#;
+        let redacted = redact_secrets(input);
+        assert!(redacted.contains("[REDACTED_OPENAI_KEY]"));
+        assert!(!redacted.contains("sk-abcdefghij1234567890abcd"));
+    }
+
+    #[test]
+    fn test_redact_json_token_field() {
+        init_secret_patterns();
+        let input = r#"{"auth":{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"}}"#;
+        let redacted = redact_secrets(input);
+        assert!(redacted.contains(r#""token":"[REDACTED]""#));
+        assert!(!redacted.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
+    }
+
+    #[test]
+    fn test_redact_json_secret_field() {
+        init_secret_patterns();
+        let input = r#"{"data":{"secret":"super_secret_value_here"}}"#;
+        let redacted = redact_secrets(input);
+        assert!(redacted.contains(r#""secret":"[REDACTED]""#));
+        assert!(!redacted.contains("super_secret_value_here"));
+    }
+
+    #[test]
+    fn test_redact_json_env_var_key() {
+        init_secret_patterns();
+        let input = r#"{"env":{"ANTHROPIC_API_KEY":"sk-ant-secret123"}}"#;
+        let redacted = redact_secrets(input);
+        assert!(redacted.contains(r#""ANTHROPIC_API_KEY":"[REDACTED]""#));
+        assert!(!redacted.contains("sk-ant-secret123"));
     }
 }
