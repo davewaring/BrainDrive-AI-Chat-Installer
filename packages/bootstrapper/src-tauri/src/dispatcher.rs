@@ -1509,13 +1509,24 @@ pub async fn install_all_deps(
         "Both backend and frontend dependency installations failed"
     };
 
-    Ok(json!({
-        "success": overall_success,
-        "message": message,
-        "parallel": true,
-        "backend": backend_data,
-        "frontend": frontend_data
-    }))
+    // Return Err if overall operation failed, so ToolResult.success reflects actual status
+    if overall_success {
+        Ok(json!({
+            "success": true,
+            "message": message,
+            "parallel": true,
+            "backend": backend_data,
+            "frontend": frontend_data
+        }))
+    } else {
+        // Include detailed results in the error for debugging
+        Err(format!(
+            "{}\n\nBackend: {}\nFrontend: {}",
+            message,
+            serde_json::to_string_pretty(&backend_data).unwrap_or_default(),
+            serde_json::to_string_pretty(&frontend_data).unwrap_or_default()
+        ))
+    }
 }
 
 /// Setup the environment file by copying .env-dev to .env
