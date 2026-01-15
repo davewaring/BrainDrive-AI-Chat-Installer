@@ -27,6 +27,9 @@ sysinfo = "0.30"
 regex = "1.11"
 chrono = "0.4"
 reqwest = { version = "0.11", features = ["stream"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

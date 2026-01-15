@@ -10,6 +10,7 @@ mod websocket;
 mod system_info;
 mod dispatcher;
 pub mod process_manager;
+pub mod logging;
 
 // Type alias for the WebSocket sender
 pub type WsSender = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
@@ -150,8 +151,38 @@ async fn get_braindrive_status(state: State<'_, AppState>) -> Result<serde_json:
     dispatcher::get_braindrive_status(&state.process_state).await
 }
 
+#[tauri::command]
+async fn export_logs() -> Result<String, String> {
+    tracing::info!("Exporting logs for sharing");
+    let path = logging::export_logs_for_sharing(Some(2000))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn get_recent_logs(count: Option<usize>) -> Result<Vec<String>, String> {
+    let num_lines = count.unwrap_or(50);
+    logging::get_recent_events(num_lines)
+}
+
+#[tauri::command]
+async fn get_log_directory() -> Result<String, String> {
+    Ok(logging::get_log_dir().to_string_lossy().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize logging system
+    if let Err(e) = logging::init_logging() {
+        eprintln!("Warning: Failed to initialize logging: {}", e);
+    }
+
+    // Clean up old logs (keep last 7 days)
+    if let Err(e) = logging::cleanup_old_logs(7) {
+        tracing::warn!(error = %e, "Failed to clean up old logs");
+    }
+
+    tracing::info!("BrainDrive Installer starting");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
@@ -164,6 +195,9 @@ pub fn run() {
             stop_braindrive,
             restart_braindrive,
             get_braindrive_status,
+            export_logs,
+            get_recent_logs,
+            get_log_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
