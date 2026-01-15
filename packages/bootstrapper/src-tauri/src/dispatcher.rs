@@ -91,11 +91,6 @@ fn get_isolated_conda_binary() -> Option<PathBuf> {
     None
 }
 
-/// Check if isolated conda is installed in ~/BrainDrive/miniconda3
-fn is_isolated_conda_installed() -> bool {
-    get_isolated_conda_binary().is_some()
-}
-
 /// Detect system information and return it as JSON
 pub async fn detect_system() -> Result<Value, String> {
     let info = system_info::detect().await?;
@@ -1041,40 +1036,6 @@ async fn start_ollama_service() -> Result<(), String> {
     } else {
         Err("Ollama service started but not responding on port 11434 after 30 seconds".to_string())
     }
-}
-
-/// Pull a vetted Ollama model
-pub async fn pull_ollama_model(
-    model: &str,
-    registry: Option<String>,
-    force: bool,
-) -> Result<Value, String> {
-    ensure_command_available("ollama")?;
-    let sanitized_model = sanitize_model_name(model)?;
-
-    let mut command = Command::new("ollama");
-    command.arg("pull");
-
-    if let Some(registry) = registry {
-        let sanitized_registry = sanitize_registry(&registry)?;
-        command.arg(format!("{}{}", sanitized_registry, sanitized_model));
-    } else {
-        command.arg(&sanitized_model);
-    }
-
-    if force {
-        command.arg("--force");
-    }
-
-    let result = run_command(command).await?;
-
-    Ok(json!({
-        "success": result.success,
-        "exit_code": result.exit_code,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "model": sanitized_model
-    }))
 }
 
 /// Pull a vetted Ollama model with progress streaming

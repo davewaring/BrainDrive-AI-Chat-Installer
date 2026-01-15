@@ -114,8 +114,9 @@ pub enum IncomingMessage {
     #[serde(rename = "restart_braindrive")]
     RestartBraindrive { id: String },
 
-    /// Status update from backend
+    /// Status update from backend (field unused but kept for JSON deserialization)
     #[serde(rename = "status_update")]
+    #[allow(dead_code)]
     StatusUpdate { bootstrapper_connected: bool },
 
     /// Catch-all for unknown messages
