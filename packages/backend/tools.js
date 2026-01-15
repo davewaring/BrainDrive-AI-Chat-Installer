@@ -19,7 +19,7 @@ export const TOOLS = [
   },
   {
     name: 'install_conda',
-    description: 'Install Miniconda automatically if conda is not already installed. Downloads and installs Miniconda to ~/miniconda3 without requiring sudo or terminal access. Use this when detect_system shows conda_installed is false. Shows download progress in the UI.',
+    description: 'Install Miniconda automatically if conda is not already installed. Downloads and installs Miniconda to ~/BrainDrive/miniconda3 (isolated from any system conda) without requiring sudo or terminal access. Use this when detect_system shows conda_installed is false. Shows download progress in the UI.',
     input_schema: {
       type: 'object',
       properties: {},

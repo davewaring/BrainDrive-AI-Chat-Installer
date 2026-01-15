@@ -19,7 +19,9 @@ use tokio::time::{sleep, Duration};
 const DEFAULT_REPO_DIR: &str = "BrainDrive";
 const CONDA_ENV_NAME: &str = "BrainDriveDev";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
-const MINICONDA_INSTALL_DIR: &str = "miniconda3";
+/// Isolated Miniconda is installed inside the BrainDrive directory
+/// This prevents conflicts with any existing user conda installation
+const ISOLATED_MINICONDA_DIR: &str = "miniconda3";
 
 /// Known paths where Ollama might be installed
 /// GUI apps often have minimal PATH, so we check absolute paths directly
@@ -56,6 +58,35 @@ fn find_ollama_binary() -> Option<PathBuf> {
     None
 }
 
+/// Get the path to the isolated Miniconda installation directory
+/// This is ~/BrainDrive/miniconda3 - completely separate from any system conda
+fn get_isolated_miniconda_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(DEFAULT_REPO_DIR).join(ISOLATED_MINICONDA_DIR))
+}
+
+/// Get the path to the isolated conda binary
+/// Returns the full path to conda binary in ~/BrainDrive/miniconda3/bin/conda
+fn get_isolated_conda_binary() -> Option<PathBuf> {
+    let miniconda_dir = get_isolated_miniconda_dir()?;
+
+    #[cfg(target_os = "windows")]
+    let conda_binary = miniconda_dir.join("Scripts").join("conda.exe");
+
+    #[cfg(not(target_os = "windows"))]
+    let conda_binary = miniconda_dir.join("bin").join("conda");
+
+    if conda_binary.exists() {
+        Some(conda_binary)
+    } else {
+        None
+    }
+}
+
+/// Check if isolated conda is installed in ~/BrainDrive/miniconda3
+fn is_isolated_conda_installed() -> bool {
+    get_isolated_conda_binary().is_some()
+}
+
 /// Detect system information and return it as JSON
 pub async fn detect_system() -> Result<Value, String> {
     let info = system_info::detect().await?;
@@ -74,17 +105,21 @@ pub async fn check_port(port: u16) -> Result<Value, String> {
 }
 
 /// Install or update the BrainDrive Conda environment with audited commands
+/// Uses the isolated conda installation at ~/BrainDrive/miniconda3
 pub async fn install_conda_env(
     env_name: &str,
     repo_path: Option<String>,
     environment_file: Option<String>,
 ) -> Result<Value, String> {
-    ensure_command_available("conda")?;
+    // Get the conda binary path (prefers isolated installation)
+    let conda_path = find_conda_binary()
+        .ok_or("Conda is not installed. Please install it first using the install_conda tool.")?;
+
     let sanitized_env = sanitize_env_name(env_name)?;
     let repo = resolve_repo_path(repo_path)?;
     let env_file = resolve_environment_file(&repo, environment_file)?;
 
-    let mut command = Command::new("conda");
+    let mut command = Command::new(&conda_path);
     command
         .arg("env")
         .arg("update")
@@ -101,38 +136,55 @@ pub async fn install_conda_env(
         "stdout": result.stdout,
         "stderr": result.stderr,
         "env_name": sanitized_env,
-        "environment_file": env_file.to_string_lossy()
+        "environment_file": env_file.to_string_lossy(),
+        "conda_path": conda_path.to_string_lossy()
     }))
 }
 
 /// Install Miniconda automatically (no sudo required)
 /// Downloads the installer for the user's platform and runs it in batch mode
+/// Installs to ~/BrainDrive/miniconda3 (isolated from any system conda)
 pub async fn install_conda(
     request_id: String,
     sender: Arc<Mutex<Option<WsSender>>>,
 ) -> Result<Value, String> {
-    // Check if conda is already installed
-    if let Some(conda_path) = find_conda_binary() {
+    // Check if isolated conda is already installed at ~/BrainDrive/miniconda3
+    if let Some(conda_path) = get_isolated_conda_binary() {
         return Ok(json!({
             "success": true,
             "already_installed": true,
             "conda_path": conda_path.to_string_lossy(),
-            "message": "Conda is already installed"
+            "isolated": true,
+            "message": "Isolated Miniconda is already installed in BrainDrive directory"
         }));
     }
 
     let home_dir = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let install_path = home_dir.join(MINICONDA_INSTALL_DIR);
 
-    // Check if miniconda directory already exists
+    // Install to ~/BrainDrive/miniconda3 (isolated installation)
+    let braindrive_dir = home_dir.join(DEFAULT_REPO_DIR);
+    let install_path = braindrive_dir.join(ISOLATED_MINICONDA_DIR);
+
+    // Ensure the BrainDrive directory exists
+    if !braindrive_dir.exists() {
+        std::fs::create_dir_all(&braindrive_dir)
+            .map_err(|e| format!("Failed to create BrainDrive directory: {}", e))?;
+    }
+
+    // Check if miniconda directory already exists at the isolated location
     if install_path.exists() {
+        #[cfg(target_os = "windows")]
+        let conda_in_install = install_path.join("Scripts/conda.exe");
+        #[cfg(not(target_os = "windows"))]
         let conda_in_install = install_path.join("bin/conda");
+
         if conda_in_install.exists() {
             return Ok(json!({
                 "success": true,
                 "already_installed": true,
                 "conda_path": conda_in_install.to_string_lossy(),
-                "message": "Miniconda is already installed"
+                "isolated": true,
+                "message": "Isolated Miniconda is already installed"
             }));
         }
     }
@@ -229,16 +281,27 @@ pub async fn install_conda(
                 "already_installed": false,
                 "conda_path": conda_binary.to_string_lossy(),
                 "install_path": install_path.to_string_lossy(),
-                "message": "Miniconda installed successfully"
+                "isolated": true,
+                "message": "Miniconda installed successfully to BrainDrive directory"
             }))
         }
         Err(e) => Err(format!("Failed to install Miniconda: {}", e)),
     }
 }
 
-/// Find conda binary in known paths (including user home directory)
+/// Find conda binary in known paths
+/// PRIORITY ORDER:
+/// 1. Isolated BrainDrive installation (~/BrainDrive/miniconda3) - preferred
+/// 2. User home directory installations (~/miniconda3, ~/anaconda3)
+/// 3. System-wide paths
+/// 4. PATH lookup via which/where
 fn find_conda_binary() -> Option<PathBuf> {
-    // Check home directory paths first (most common for user installs)
+    // FIRST: Check the isolated BrainDrive installation (highest priority)
+    if let Some(isolated_conda) = get_isolated_conda_binary() {
+        return Some(isolated_conda);
+    }
+
+    // Check other home directory paths (for fallback/detection)
     if let Some(home) = dirs::home_dir() {
         let home_paths = [
             home.join("miniconda3/bin/conda"),
@@ -1244,11 +1307,14 @@ pub async fn clone_repo(repo_url: Option<String>, target_path: Option<String>) -
 }
 
 /// Install backend Python dependencies using pip in conda environment
+/// Uses the isolated conda installation at ~/BrainDrive/miniconda3
 pub async fn install_backend_deps(
     env_name: Option<String>,
     repo_path: Option<String>,
 ) -> Result<Value, String> {
-    ensure_command_available("conda")?;
+    // Get the conda binary path (prefers isolated installation)
+    let conda_path = find_conda_binary()
+        .ok_or("Conda is not installed. Please install it first using the install_conda tool.")?;
 
     let env = sanitize_env_name(&env_name.unwrap_or_else(|| CONDA_ENV_NAME.to_string()))?;
     let repo = resolve_repo_path_or_default(repo_path)?;
@@ -1269,12 +1335,12 @@ pub async fn install_backend_deps(
         ));
     }
 
-    // Build the pip install command to run in conda environment
+    // Build the pip install command to run in conda environment using the isolated conda
     let pip_cmd = format!(
         "pip install -r \"{}\"",
         requirements_file.display()
     );
-    let full_cmd = process_manager::conda_run_command(&env, &pip_cmd);
+    let full_cmd = process_manager::conda_run_command_with_path(&conda_path, &env, &pip_cmd);
 
     let result = run_shell_script(&full_cmd).await?;
 
@@ -1284,7 +1350,8 @@ pub async fn install_backend_deps(
         "stdout": result.stdout,
         "stderr": result.stderr,
         "env_name": env,
-        "requirements_file": requirements_file.to_string_lossy()
+        "requirements_file": requirements_file.to_string_lossy(),
+        "conda_path": conda_path.to_string_lossy()
     }))
 }
 
@@ -1363,13 +1430,16 @@ pub async fn setup_env_file(repo_path: Option<String>) -> Result<Value, String> 
 }
 
 /// Create a new conda environment for BrainDrive
+/// Uses the isolated conda installation at ~/BrainDrive/miniconda3
 pub async fn create_conda_env(env_name: Option<String>) -> Result<Value, String> {
-    ensure_command_available("conda")?;
+    // Get the conda binary path (prefers isolated installation)
+    let conda_path = find_conda_binary()
+        .ok_or("Conda is not installed. Please install it first using the install_conda tool.")?;
 
     let env = sanitize_env_name(&env_name.unwrap_or_else(|| CONDA_ENV_NAME.to_string()))?;
 
     // Check if environment already exists
-    let check_cmd = Command::new("conda")
+    let check_cmd = Command::new(&conda_path)
         .args(["env", "list"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1387,8 +1457,8 @@ pub async fn create_conda_env(env_name: Option<String>) -> Result<Value, String>
         }));
     }
 
-    // Create the environment with Python 3.11, nodejs, and git
-    let mut command = Command::new("conda");
+    // Create the environment with Python 3.11, nodejs, and git from conda-forge
+    let mut command = Command::new(&conda_path);
     command
         .args([
             "create",
@@ -1407,7 +1477,8 @@ pub async fn create_conda_env(env_name: Option<String>) -> Result<Value, String>
         "exit_code": result.exit_code,
         "stdout": result.stdout,
         "stderr": result.stderr,
-        "env_name": env
+        "env_name": env,
+        "conda_path": conda_path.to_string_lossy()
     }))
 }
 

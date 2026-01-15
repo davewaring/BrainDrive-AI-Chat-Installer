@@ -18,6 +18,11 @@ const OLLAMA_KNOWN_PATHS: &[&str] = &[
     // Windows paths - checked at runtime via home directory
 ];
 
+/// BrainDrive directory name for isolated installations
+const DEFAULT_REPO_DIR: &str = "BrainDrive";
+/// Isolated miniconda directory name
+const ISOLATED_MINICONDA_DIR: &str = "miniconda3";
+
 /// Known paths where Conda might be installed (Unix)
 const CONDA_KNOWN_PATHS_UNIX: &[&str] = &[
     "/opt/miniconda3/bin/conda",
@@ -61,7 +66,20 @@ fn check_binary_exists(known_paths: &[&str], cmd: &str) -> bool {
 }
 
 /// Check if conda is installed (includes home directory paths)
+/// Priority: 1. Isolated BrainDrive installation, 2. User home, 3. System-wide, 4. PATH
 fn check_conda_installed() -> bool {
+    // FIRST: Check the isolated BrainDrive installation (highest priority)
+    if let Some(home) = dirs::home_dir() {
+        #[cfg(not(target_os = "windows"))]
+        let isolated_path = home.join(DEFAULT_REPO_DIR).join(ISOLATED_MINICONDA_DIR).join("bin/conda");
+        #[cfg(target_os = "windows")]
+        let isolated_path = home.join(DEFAULT_REPO_DIR).join(ISOLATED_MINICONDA_DIR).join("Scripts\\conda.exe");
+
+        if isolated_path.exists() {
+            return true;
+        }
+    }
+
     // Check system-wide paths (Unix only)
     #[cfg(not(target_os = "windows"))]
     for path in CONDA_KNOWN_PATHS_UNIX {
@@ -70,7 +88,7 @@ fn check_conda_installed() -> bool {
         }
     }
 
-    // Check home directory paths (works for both Unix and Windows)
+    // Check other home directory paths (works for both Unix and Windows)
     if let Some(home) = dirs::home_dir() {
         #[cfg(not(target_os = "windows"))]
         let home_paths = [

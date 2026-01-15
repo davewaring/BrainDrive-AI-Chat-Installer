@@ -33,7 +33,8 @@ Follow this sequence once the bootstrapper is connected:
    - Linux: Returns manual instructions (needs sudo)
 
 3. **Install Conda if needed** - If conda_installed is false, use \`install_conda\`
-   - Automatically downloads and installs Miniconda
+   - Automatically downloads and installs Miniconda to ~/BrainDrive/miniconda3
+   - This is isolated from any existing system conda installation
    - No terminal or sudo required - fully automated!
    - Shows download progress in the UI
 
@@ -82,7 +83,7 @@ If the bootstrapper is NOT connected:
 
 ## Tool Behavior Notes
 - \`install_git\`: On macOS triggers Xcode CLI tools dialog (user clicks Install). On Windows downloads and installs silently. Returns \`already_installed: true\` if git exists. On macOS, waits for user to complete the dialog.
-- \`install_conda\`: Downloads and installs Miniconda automatically. Returns success with \`already_installed: true\` if conda is already present.
+- \`install_conda\`: Downloads and installs Miniconda to ~/BrainDrive/miniconda3 (isolated installation). Returns success with \`already_installed: true\` if the isolated conda is already present.
 - \`start_braindrive\`: Automatically finds available ports if defaults are taken. Returns success if already running.
 - \`clone_repo\`: Returns success with \`already_exists: true\` if repo exists.
 - \`create_conda_env\`: Returns success with \`already_exists: true\` if env exists.
@@ -90,7 +91,7 @@ If the bootstrapper is NOT connected:
 
 ## Error Recovery
 - If git not installed: Use \`install_git\` - on macOS shows a simple dialog, on Windows installs silently
-- If conda not installed: Use \`install_conda\` to automatically install Miniconda (no user action needed!)
+- If conda not installed: Use \`install_conda\` to automatically install Miniconda to ~/BrainDrive/miniconda3 (no user action needed!)
 - If start_braindrive fails: Check the error message - it includes log paths for debugging
 - If clone fails: Check internet connection, try again
 - If install_git fails on Linux: User needs to run sudo apt/dnf/pacman to install git manually

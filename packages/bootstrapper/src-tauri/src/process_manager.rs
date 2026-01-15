@@ -316,8 +316,30 @@ pub async fn spawn_detached(
     Ok(child.id())
 }
 
+/// Constants for isolated conda location
+const DEFAULT_REPO_DIR: &str = "BrainDrive";
+const ISOLATED_MINICONDA_DIR: &str = "miniconda3";
+
+/// Get the path to the isolated conda installation (~/BrainDrive/miniconda3)
+fn get_isolated_conda_base() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let isolated_path = home.join(DEFAULT_REPO_DIR).join(ISOLATED_MINICONDA_DIR);
+    if isolated_path.exists() {
+        Some(isolated_path)
+    } else {
+        None
+    }
+}
+
 /// Get the conda base path
+/// Priority: 1. Isolated installation (~/BrainDrive/miniconda3), 2. PATH-based conda
 pub fn get_conda_base() -> Option<PathBuf> {
+    // First check for isolated conda installation
+    if let Some(isolated) = get_isolated_conda_base() {
+        return Some(isolated);
+    }
+
+    // Fall back to PATH-based conda
     use std::process::Command as StdCommand;
 
     let output = StdCommand::new("conda")
@@ -335,25 +357,75 @@ pub fn get_conda_base() -> Option<PathBuf> {
     }
 }
 
+/// Get the conda base path from a specific conda binary
+pub fn get_conda_base_from_binary(conda_path: &PathBuf) -> Option<PathBuf> {
+    use std::process::Command as StdCommand;
+
+    let output = StdCommand::new(conda_path)
+        .args(["info", "--base"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_string();
+        Some(PathBuf::from(path))
+    } else {
+        None
+    }
+}
+
 /// Build the shell command to run something in a conda environment
+/// Uses the isolated conda installation if available
 #[cfg(unix)]
 pub fn conda_run_command(env_name: &str, command: &str) -> String {
     // Source conda.sh to ensure conda is available, then run the command
     if let Some(conda_base) = get_conda_base() {
         let conda_sh = conda_base.join("etc/profile.d/conda.sh");
+        let conda_bin = conda_base.join("bin/conda");
         format!(
-            "source \"{}\" && conda activate {} && {}",
+            "source \"{}\" && \"{}\" activate {} && {}",
             conda_sh.display(),
+            conda_bin.display(),
             env_name,
             command
         )
     } else {
-        // Fallback to conda run
+        // Fallback to conda run (requires conda in PATH)
         format!("conda run -n {} {}", env_name, command)
     }
 }
 
 #[cfg(windows)]
 pub fn conda_run_command(env_name: &str, command: &str) -> String {
-    format!("conda run -n {} {}", env_name, command)
+    if let Some(conda_base) = get_conda_base() {
+        let conda_bin = conda_base.join("Scripts/conda.exe");
+        format!("\"{}\" run -n {} {}", conda_bin.display(), env_name, command)
+    } else {
+        format!("conda run -n {} {}", env_name, command)
+    }
+}
+
+/// Build the shell command to run something in a conda environment using a specific conda binary
+#[cfg(unix)]
+pub fn conda_run_command_with_path(conda_path: &PathBuf, env_name: &str, command: &str) -> String {
+    if let Some(conda_base) = get_conda_base_from_binary(conda_path) {
+        let conda_sh = conda_base.join("etc/profile.d/conda.sh");
+        format!(
+            "source \"{}\" && \"{}\" activate {} && {}",
+            conda_sh.display(),
+            conda_path.display(),
+            env_name,
+            command
+        )
+    } else {
+        // Fallback to conda run with explicit path
+        format!("\"{}\" run -n {} {}", conda_path.display(), env_name, command)
+    }
+}
+
+#[cfg(windows)]
+pub fn conda_run_command_with_path(conda_path: &PathBuf, env_name: &str, command: &str) -> String {
+    format!("\"{}\" run -n {} {}", conda_path.display(), env_name, command)
 }
