@@ -2380,7 +2380,10 @@ async fn run_shell_script(script: &str) -> Result<CommandOutput, String> {
 #[cfg(target_os = "windows")]
 async fn run_shell_script(script: &str) -> Result<CommandOutput, String> {
     let mut command = Command::new("cmd.exe");
-    command.arg("/C").arg(script);
+    // Use /S /C with the command wrapped in quotes to handle nested quotes properly
+    // Without /S, cmd.exe has special parsing when the command starts with a quote
+    // that can break commands with multiple quoted paths
+    command.arg("/S").arg("/C").arg(format!("\"{}\"", script));
     command.creation_flags(CREATE_NO_WINDOW);
     run_command(command).await
 }
