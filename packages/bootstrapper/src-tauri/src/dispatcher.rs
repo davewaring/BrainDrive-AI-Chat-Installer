@@ -1615,14 +1615,33 @@ pub async fn install_backend_deps(
         ));
     }
 
-    // Build the pip install command to run in conda environment using the isolated conda
-    let pip_cmd = format!(
-        "pip install -r \"{}\"",
-        requirements_file.display()
-    );
-    let full_cmd = process_manager::conda_run_command_with_path(&conda_path, &env, &pip_cmd);
+    #[cfg(target_os = "windows")]
+    let result = {
+        let mut command = Command::new(&conda_path);
+        command
+            .arg("run")
+            .arg("-n")
+            .arg(&env)
+            .arg("python")
+            .arg("-m")
+            .arg("pip")
+            .arg("install")
+            .arg("-r")
+            .arg(&requirements_file);
+        command.creation_flags(CREATE_NO_WINDOW);
+        run_command(command).await?
+    };
 
-    let result = run_shell_script(&full_cmd).await?;
+    #[cfg(not(target_os = "windows"))]
+    let result = {
+        // Build the pip install command to run in conda environment using the isolated conda
+        let pip_cmd = format!(
+            "pip install -r \"{}\"",
+            requirements_file.display()
+        );
+        let full_cmd = process_manager::conda_run_command_with_path(&conda_path, &env, &pip_cmd);
+        run_shell_script(&full_cmd).await?
+    };
 
     Ok(json!({
         "success": result.success,
@@ -1663,17 +1682,26 @@ pub async fn install_frontend_deps(
         ));
     }
 
-    let npm_cmd = if cfg!(target_os = "windows") {
-        format!(
-            "cmd /C \"cd /d {} && npm install\"",
-            frontend_path.display()
-        )
-    } else {
-        format!("cd \"{}\" && npm install", frontend_path.display())
+    #[cfg(target_os = "windows")]
+    let result = {
+        let mut command = Command::new(&conda_path);
+        command
+            .arg("run")
+            .arg("-n")
+            .arg(&env)
+            .arg("npm")
+            .arg("install")
+            .current_dir(&frontend_path);
+        command.creation_flags(CREATE_NO_WINDOW);
+        run_command(command).await?
     };
-    let full_cmd = process_manager::conda_run_command_with_path(&conda_path, &env, &npm_cmd);
 
-    let result = run_shell_script(&full_cmd).await?;
+    #[cfg(not(target_os = "windows"))]
+    let result = {
+        let npm_cmd = format!("cd \"{}\" && npm install", frontend_path.display());
+        let full_cmd = process_manager::conda_run_command_with_path(&conda_path, &env, &npm_cmd);
+        run_shell_script(&full_cmd).await?
+    };
 
     Ok(json!({
         "success": result.success,
