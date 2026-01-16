@@ -2470,8 +2470,22 @@ fn resolve_repo_path(input: Option<String>) -> Result<PathBuf, String> {
         ));
     }
 
-    if !canonical.starts_with(&home) {
-        return Err("Repository path must be inside your home directory".to_string());
+    // On Windows, canonicalize() can add \\?\ prefix or change casing,
+    // so we need to compare the path strings case-insensitively
+    #[cfg(target_os = "windows")]
+    {
+        let home_str = home.to_string_lossy().to_lowercase();
+        let canonical_str = canonical.to_string_lossy().to_lowercase()
+            .trim_start_matches(r"\\?\").to_string();
+        if !canonical_str.starts_with(&home_str) {
+            return Err("Repository path must be inside your home directory".to_string());
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if !canonical.starts_with(&home) {
+            return Err("Repository path must be inside your home directory".to_string());
+        }
     }
 
     Ok(canonical)
@@ -2504,8 +2518,21 @@ fn resolve_repo_path_or_default(input: Option<String>) -> Result<PathBuf, String
     };
 
     // Security: ensure path is inside home directory
-    if !resolved.starts_with(&home) {
-        return Err("Repository path must be inside your home directory".to_string());
+    // On Windows, canonicalize() can add \\?\ prefix or change casing
+    #[cfg(target_os = "windows")]
+    {
+        let home_str = home.to_string_lossy().to_lowercase();
+        let resolved_str = resolved.to_string_lossy().to_lowercase()
+            .trim_start_matches(r"\\?\").to_string();
+        if !resolved_str.starts_with(&home_str) {
+            return Err("Repository path must be inside your home directory".to_string());
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if !resolved.starts_with(&home) {
+            return Err("Repository path must be inside your home directory".to_string());
+        }
     }
 
     Ok(resolved)
