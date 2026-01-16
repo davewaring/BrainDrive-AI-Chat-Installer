@@ -280,12 +280,40 @@ pub async fn install_conda(
                 return Err("Miniconda installation completed but conda binary not found".to_string());
             }
 
+            // Configure conda to use conda-forge and avoid TOS issues
+            // This runs silently and doesn't require user interaction
+            let _ = send_message(&sender, OutgoingMessage::Progress {
+                id: request_id.clone(),
+                operation: "install_conda".to_string(),
+                percent: Some(90),
+                message: "Configuring conda...".to_string(),
+                bytes_downloaded: None,
+                bytes_total: None,
+            }).await;
+
+            // Set conda-forge as default channel and remove defaults that require TOS
+            let config_commands = [
+                ["config", "--set", "auto_activate_base", "false"],
+                ["config", "--add", "channels", "conda-forge"],
+                ["config", "--set", "channel_priority", "strict"],
+                ["config", "--remove", "channels", "defaults"],
+            ];
+
+            for args in &config_commands {
+                let mut cmd = Command::new(&conda_binary);
+                cmd.args(*args);
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(CREATE_NO_WINDOW);
+                // Ignore errors - some configs may fail if already set
+                let _ = cmd.output().await;
+            }
+
             // Send completion progress
             let _ = send_message(&sender, OutgoingMessage::Progress {
                 id: request_id.clone(),
                 operation: "install_conda".to_string(),
                 percent: Some(100),
-                message: "Miniconda installed successfully!".to_string(),
+                message: "Miniconda installed and configured!".to_string(),
                 bytes_downloaded: None,
                 bytes_total: None,
             }).await;
@@ -1396,7 +1424,9 @@ fn parse_size_to_bytes(value: &str, unit: &str) -> Option<u64> {
 /// Clone the BrainDrive repository
 /// Handles the case where ~/BrainDrive already exists with miniconda3 (from install_conda)
 pub async fn clone_repo(repo_url: Option<String>, target_path: Option<String>) -> Result<Value, String> {
-    ensure_command_available("git")?;
+    // Use find_git_binary to get absolute path (GUI apps have limited PATH)
+    let git_path = find_git_binary()
+        .ok_or("Git is not installed. Please install Git first.")?;
 
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
     let target = match target_path {
@@ -1440,7 +1470,7 @@ pub async fn clone_repo(repo_url: Option<String>, target_path: Option<String>) -
 
         if has_only_installer_artifacts {
             // Use git init + fetch + checkout approach for existing directory
-            return clone_into_existing_dir(&target, &url).await;
+            return clone_into_existing_dir(&target, &url, &git_path).await;
         } else {
             return Err(format!(
                 "Directory {} exists but is not a git repository and contains non-installer files",
@@ -1450,7 +1480,7 @@ pub async fn clone_repo(repo_url: Option<String>, target_path: Option<String>) -
     }
 
     // Standard clone for non-existing directory
-    let mut command = Command::new("git");
+    let mut command = Command::new(&git_path);
     command
         .arg("clone")
         .arg("--depth")
@@ -1491,9 +1521,9 @@ fn check_only_installer_artifacts(dir: &PathBuf) -> bool {
 
 /// Clone into an existing directory that contains only installer artifacts
 /// Uses git init + fetch + checkout approach
-async fn clone_into_existing_dir(target: &PathBuf, url: &str) -> Result<Value, String> {
+async fn clone_into_existing_dir(target: &PathBuf, url: &str, git_path: &PathBuf) -> Result<Value, String> {
     // Initialize git repo
-    let mut init_cmd = Command::new("git");
+    let mut init_cmd = Command::new(git_path);
     init_cmd.arg("init").current_dir(target);
     let init_result = run_command(init_cmd).await?;
     if !init_result.success {
@@ -1501,7 +1531,7 @@ async fn clone_into_existing_dir(target: &PathBuf, url: &str) -> Result<Value, S
     }
 
     // Add remote origin
-    let mut remote_cmd = Command::new("git");
+    let mut remote_cmd = Command::new(git_path);
     remote_cmd
         .args(["remote", "add", "origin", url])
         .current_dir(target);
@@ -1511,14 +1541,14 @@ async fn clone_into_existing_dir(target: &PathBuf, url: &str) -> Result<Value, S
     }
 
     // Fetch with depth 1
-    let mut fetch_cmd = Command::new("git");
+    let mut fetch_cmd = Command::new(git_path);
     fetch_cmd
         .args(["fetch", "--depth", "1", "origin", "main"])
         .current_dir(target);
     let fetch_result = run_command(fetch_cmd).await?;
     if !fetch_result.success {
         // Try 'master' branch if 'main' doesn't exist
-        let mut fetch_master = Command::new("git");
+        let mut fetch_master = Command::new(git_path);
         fetch_master
             .args(["fetch", "--depth", "1", "origin", "master"])
             .current_dir(target);
@@ -1527,7 +1557,7 @@ async fn clone_into_existing_dir(target: &PathBuf, url: &str) -> Result<Value, S
             return Err(format!("Failed to fetch repository: {}", fetch_result.stderr));
         }
         // Checkout master
-        let mut checkout_cmd = Command::new("git");
+        let mut checkout_cmd = Command::new(git_path);
         checkout_cmd
             .args(["checkout", "-b", "master", "origin/master"])
             .current_dir(target);
@@ -1537,7 +1567,7 @@ async fn clone_into_existing_dir(target: &PathBuf, url: &str) -> Result<Value, S
         }
     } else {
         // Checkout main
-        let mut checkout_cmd = Command::new("git");
+        let mut checkout_cmd = Command::new(git_path);
         checkout_cmd
             .args(["checkout", "-b", "main", "origin/main"])
             .current_dir(target);
@@ -1805,11 +1835,13 @@ pub async fn create_conda_env(env_name: Option<String>, force_recreate: Option<b
     }
 
     // Create the environment with Python 3.11, nodejs, and git from conda-forge
+    // Use --override-channels to bypass Anaconda channel TOS requirements
     let mut command = Command::new(&conda_path);
     command
         .args([
             "create",
             "-n", &env,
+            "--override-channels",
             "-c", "conda-forge",
             "python=3.11",
             "nodejs",
