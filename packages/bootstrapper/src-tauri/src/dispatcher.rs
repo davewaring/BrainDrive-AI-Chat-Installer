@@ -2471,24 +2471,30 @@ fn resolve_repo_path(input: Option<String>) -> Result<PathBuf, String> {
     }
 
     // On Windows, canonicalize() can add \\?\ prefix or change casing,
-    // so we need to compare the path strings case-insensitively
+    // Strip the prefix and compare case-insensitively
     #[cfg(target_os = "windows")]
-    {
+    let result = {
+        let canonical_str = canonical.to_string_lossy();
+        let clean_path = canonical_str.trim_start_matches(r"\\?\");
+        let clean_pathbuf = PathBuf::from(clean_path);
+
         let home_str = home.to_string_lossy().to_lowercase();
-        let canonical_str = canonical.to_string_lossy().to_lowercase()
-            .trim_start_matches(r"\\?\").to_string();
-        if !canonical_str.starts_with(&home_str) {
+        let clean_lower = clean_path.to_lowercase();
+        if !clean_lower.starts_with(&home_str) {
             return Err("Repository path must be inside your home directory".to_string());
         }
-    }
+        clean_pathbuf
+    };
+
     #[cfg(not(target_os = "windows"))]
-    {
+    let result = {
         if !canonical.starts_with(&home) {
             return Err("Repository path must be inside your home directory".to_string());
         }
-    }
+        canonical
+    };
 
-    Ok(canonical)
+    Ok(result)
 }
 
 /// Resolve repo path, returning default if not specified.
@@ -2518,24 +2524,30 @@ fn resolve_repo_path_or_default(input: Option<String>) -> Result<PathBuf, String
     };
 
     // Security: ensure path is inside home directory
-    // On Windows, canonicalize() can add \\?\ prefix or change casing
+    // On Windows, canonicalize() can add \\?\ prefix - strip it and compare case-insensitively
     #[cfg(target_os = "windows")]
-    {
+    let result = {
+        let resolved_str = resolved.to_string_lossy();
+        let clean_path = resolved_str.trim_start_matches(r"\\?\");
+        let clean_pathbuf = PathBuf::from(clean_path);
+
         let home_str = home.to_string_lossy().to_lowercase();
-        let resolved_str = resolved.to_string_lossy().to_lowercase()
-            .trim_start_matches(r"\\?\").to_string();
-        if !resolved_str.starts_with(&home_str) {
+        let clean_lower = clean_path.to_lowercase();
+        if !clean_lower.starts_with(&home_str) {
             return Err("Repository path must be inside your home directory".to_string());
         }
-    }
+        clean_pathbuf
+    };
+
     #[cfg(not(target_os = "windows"))]
-    {
+    let result = {
         if !resolved.starts_with(&home) {
             return Err("Repository path must be inside your home directory".to_string());
         }
-    }
+        resolved
+    };
 
-    Ok(resolved)
+    Ok(result)
 }
 
 fn resolve_environment_file(repo: &Path, environment_file: Option<String>) -> Result<PathBuf, String> {
