@@ -23,147 +23,41 @@ const DEFAULT_REPO_DIR: &str = "BrainDrive";
 /// Isolated miniconda directory name
 const ISOLATED_MINICONDA_DIR: &str = "miniconda3";
 
-/// Known paths where Conda might be installed (Unix)
-const CONDA_KNOWN_PATHS_UNIX: &[&str] = &[
-    "/opt/miniconda3/bin/conda",
-    "/opt/anaconda3/bin/conda",
-    "/opt/homebrew/bin/conda",
-    "/usr/local/bin/conda",
-];
+/// BrainDrive conda environment name
+const BRAINDRIVE_ENV_NAME: &str = "BrainDriveDev";
 
-/// Known paths where Node.js might be installed (Unix)
-const NODE_KNOWN_PATHS_UNIX: &[&str] = &[
-    "/usr/local/bin/node",
-    "/opt/homebrew/bin/node",
-    "/usr/bin/node",
-];
-
-/// Known paths where Node.js might be installed (Windows)
-#[cfg(target_os = "windows")]
-const NODE_KNOWN_PATHS_WINDOWS: &[&str] = &[
-    "C:\\Program Files\\nodejs\\node.exe",
-    "C:\\Program Files (x86)\\nodejs\\node.exe",
-];
-
-/// Known paths where Git might be installed (Windows)
-#[cfg(target_os = "windows")]
-const GIT_KNOWN_PATHS_WINDOWS: &[&str] = &[
-    "C:\\Program Files\\Git\\bin\\git.exe",
-    "C:\\Program Files (x86)\\Git\\bin\\git.exe",
-];
-
-/// Check if a binary exists at known paths or via which/where command
-#[allow(dead_code)]
-fn check_binary_exists(known_paths: &[&str], cmd: &str) -> bool {
-    // Check known paths first
-    for path in known_paths {
-        if PathBuf::from(path).exists() {
-            return true;
-        }
-    }
-    // Fall back to which/where
-    check_command_exists(cmd)
-}
-
-/// Check if conda is installed (includes home directory paths)
-/// Priority: 1. Isolated BrainDrive installation, 2. User home, 3. System-wide, 4. PATH
-fn check_conda_installed() -> bool {
-    // FIRST: Check the isolated BrainDrive installation (highest priority)
+/// Check if the isolated BrainDrive Miniconda is installed at ~/BrainDrive/miniconda3
+fn check_isolated_conda_installed() -> bool {
     if let Some(home) = dirs::home_dir() {
         #[cfg(not(target_os = "windows"))]
         let isolated_path = home.join(DEFAULT_REPO_DIR).join(ISOLATED_MINICONDA_DIR).join("bin/conda");
         #[cfg(target_os = "windows")]
         let isolated_path = home.join(DEFAULT_REPO_DIR).join(ISOLATED_MINICONDA_DIR).join("Scripts\\conda.exe");
 
-        if isolated_path.exists() {
-            return true;
-        }
+        return isolated_path.exists();
     }
+    false
+}
 
-    // Check system-wide paths (Unix only)
-    #[cfg(not(target_os = "windows"))]
-    for path in CONDA_KNOWN_PATHS_UNIX {
-        if PathBuf::from(path).exists() {
-            return true;
-        }
-    }
-
-    // Check other home directory paths (works for both Unix and Windows)
+/// Check if the BrainDrive conda environment is ready (has git and node)
+/// This checks if ~/BrainDrive/miniconda3/envs/BrainDriveDev exists
+fn check_braindrive_env_ready() -> bool {
     if let Some(home) = dirs::home_dir() {
+        let env_path = home
+            .join(DEFAULT_REPO_DIR)
+            .join(ISOLATED_MINICONDA_DIR)
+            .join("envs")
+            .join(BRAINDRIVE_ENV_NAME);
+
+        // Check if the environment directory exists and has python
         #[cfg(not(target_os = "windows"))]
-        let home_paths = [
-            home.join("miniconda3/bin/conda"),
-            home.join("anaconda3/bin/conda"),
-            home.join(".conda/bin/conda"),
-        ];
-
+        let python_path = env_path.join("bin/python");
         #[cfg(target_os = "windows")]
-        let home_paths = [
-            home.join("miniconda3\\Scripts\\conda.exe"),
-            home.join("anaconda3\\Scripts\\conda.exe"),
-            home.join("miniconda3\\condabin\\conda.bat"),
-            home.join("anaconda3\\condabin\\conda.bat"),
-        ];
+        let python_path = env_path.join("python.exe");
 
-        for path in &home_paths {
-            if path.exists() {
-                return true;
-            }
-        }
+        return python_path.exists();
     }
-
-    // Check Windows system-wide paths
-    #[cfg(target_os = "windows")]
-    {
-        let system_paths = [
-            "C:\\ProgramData\\miniconda3\\Scripts\\conda.exe",
-            "C:\\ProgramData\\anaconda3\\Scripts\\conda.exe",
-        ];
-        for path in &system_paths {
-            if PathBuf::from(path).exists() {
-                return true;
-            }
-        }
-    }
-
-    // Fall back to which/where
-    check_command_exists("conda")
-}
-
-/// Check if git is installed
-fn check_git_installed() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        for path in GIT_KNOWN_PATHS_WINDOWS {
-            if PathBuf::from(path).exists() {
-                return true;
-            }
-        }
-    }
-    check_command_exists("git")
-}
-
-/// Check if node is installed
-fn check_node_installed() -> bool {
-    #[cfg(not(target_os = "windows"))]
-    {
-        for path in NODE_KNOWN_PATHS_UNIX {
-            if PathBuf::from(path).exists() {
-                return true;
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        for path in NODE_KNOWN_PATHS_WINDOWS {
-            if PathBuf::from(path).exists() {
-                return true;
-            }
-        }
-    }
-
-    check_command_exists("node")
+    false
 }
 
 /// Find Ollama binary in known paths
@@ -241,9 +135,10 @@ pub async fn detect() -> Result<SystemInfo, String> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let conda_installed = check_conda_installed();
-    let git_installed = check_git_installed();
-    let node_installed = check_node_installed();
+    // Check isolated conda installation at ~/BrainDrive/miniconda3
+    let conda_installed = check_isolated_conda_installed();
+    // Check if BrainDrive conda environment is ready (includes git, node, python)
+    let braindrive_env_ready = check_braindrive_env_ready();
 
     // Use absolute path detection for Ollama (GUI apps have minimal PATH)
     let ollama_path = find_ollama_binary();
@@ -296,8 +191,7 @@ pub async fn detect() -> Result<SystemInfo, String> {
         hostname,
         home_dir,
         conda_installed,
-        git_installed,
-        node_installed,
+        braindrive_env_ready,
         ollama_installed,
         ollama_running,
         ollama_version,
@@ -434,22 +328,6 @@ fn parse_vram_string(input: &str) -> Option<f64> {
         "MB" => Some(value / 1024.0),
         "GB" => Some(value),
         _ => None,
-    }
-}
-
-fn check_command_exists(cmd: &str) -> bool {
-    if cfg!(target_os = "windows") {
-        Command::new("where")
-            .arg(cmd)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    } else {
-        Command::new("which")
-            .arg(cmd)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
     }
 }
 

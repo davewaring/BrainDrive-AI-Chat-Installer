@@ -55,9 +55,10 @@ pub struct SystemInfo {
     arch: String,
     hostname: String,
     home_dir: String,
+    /// Whether isolated conda is installed at ~/BrainDrive/miniconda3
     conda_installed: bool,
-    git_installed: bool,
-    node_installed: bool,
+    /// Whether the BrainDrive conda environment exists with git/node
+    braindrive_env_ready: bool,
     ollama_installed: bool,
     ollama_running: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

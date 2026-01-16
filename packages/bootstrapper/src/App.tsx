@@ -14,8 +14,7 @@ interface SystemInfo {
   hostname: string;
   home_dir: string;
   conda_installed: boolean;
-  git_installed: boolean;
-  node_installed: boolean;
+  braindrive_env_ready: boolean;
   ollama_installed: boolean;
   braindrive_exists: boolean;
   cpu_brand?: string;
@@ -45,37 +44,45 @@ function App() {
   };
 
   useEffect(() => {
-    // Listen for WebSocket connection events
-    const unlistenConnected = listen<boolean>('ws-connected', (event) => {
-      setWsConnected(event.payload);
-      addLog(event.payload ? 'Connected to backend' : 'Disconnected from backend');
-    });
+    let unlistenConnectedFn: (() => void) | null = null;
+    let unlistenMessageFn: (() => void) | null = null;
 
-    // Listen for WebSocket messages
-    const unlistenMessage = listen<string>('ws-message', (event) => {
-      try {
-        const msg = JSON.parse(event.payload);
-        addLog(`Received: ${msg.type}`);
-      } catch {
-        addLog(`Message: ${event.payload}`);
-      }
-    });
-
-    // Initial setup
+    // Initial setup - wait for listeners before connecting
     const init = async () => {
       try {
+        // Set up listeners FIRST, before attempting connection
+        unlistenConnectedFn = await listen<boolean>('ws-connected', (event) => {
+          setWsConnected(event.payload);
+          addLog(event.payload ? 'Connected to backend' : 'Disconnected from backend');
+        });
+
+        unlistenMessageFn = await listen<string>('ws-message', (event) => {
+          try {
+            const msg = JSON.parse(event.payload);
+            addLog(`Received: ${msg.type}`);
+          } catch {
+            addLog(`Message: ${event.payload}`);
+          }
+        });
+
         // Get system info
         const info = await invoke<SystemInfo>('get_system_info');
         setSystemInfo(info);
         addLog(`System: ${info.os} ${info.arch}`);
 
-        // Check connection status
+        // Check current connection status
         const status = await invoke<ConnectionStatus>('get_connection_status');
         setWsConnected(status.connected);
 
-        // Try to connect to backend
-        addLog('Connecting to backend...');
-        await invoke('connect_to_backend', { url: null });
+        // Try to connect to backend (listeners are ready now)
+        if (!status.connected) {
+          addLog('Connecting to backend...');
+          await invoke('connect_to_backend', { url: null });
+
+          // Re-check status after connection attempt
+          const newStatus = await invoke<ConnectionStatus>('get_connection_status');
+          setWsConnected(newStatus.connected);
+        }
       } catch (err) {
         addLog(`Error: ${err}`);
       }
@@ -84,8 +91,8 @@ function App() {
     init();
 
     return () => {
-      unlistenConnected.then(f => f());
-      unlistenMessage.then(f => f());
+      if (unlistenConnectedFn) unlistenConnectedFn();
+      if (unlistenMessageFn) unlistenMessageFn();
     };
   }, []);
 
@@ -239,33 +246,21 @@ function App() {
               </div>
             )}
             <div className="info-item">
-              <span className="info-label">Git</span>
-              <span className={`info-value ${systemInfo.git_installed ? 'installed' : 'missing'}`}>
-                {systemInfo.git_installed ? 'Installed' : 'Missing'}
+              <span className="info-label">BrainDrive</span>
+              <span className={`info-value ${systemInfo.braindrive_exists ? 'installed' : 'missing'}`}>
+                {systemInfo.braindrive_exists ? 'Installed' : 'Not Installed'}
               </span>
             </div>
             <div className="info-item">
-              <span className="info-label">Node</span>
-              <span className={`info-value ${systemInfo.node_installed ? 'installed' : 'missing'}`}>
-                {systemInfo.node_installed ? 'Installed' : 'Missing'}
-              </span>
-            </div>
-            <div className="info-item">
-              <span className="info-label">Conda</span>
-              <span className={`info-value ${systemInfo.conda_installed ? 'installed' : 'missing'}`}>
-                {systemInfo.conda_installed ? 'Installed' : 'Missing'}
+              <span className="info-label">Environment</span>
+              <span className={`info-value ${systemInfo.braindrive_env_ready ? 'installed' : 'missing'}`}>
+                {systemInfo.braindrive_env_ready ? 'Ready' : 'Not Set Up'}
               </span>
             </div>
             <div className="info-item">
               <span className="info-label">Ollama</span>
               <span className={`info-value ${systemInfo.ollama_installed ? 'installed' : 'missing'}`}>
-                {systemInfo.ollama_installed ? 'Installed' : 'Missing'}
-              </span>
-            </div>
-            <div className="info-item">
-              <span className="info-label">BrainDrive</span>
-              <span className={`info-value ${systemInfo.braindrive_exists ? 'installed' : 'missing'}`}>
-                {systemInfo.braindrive_exists ? 'Installed' : 'Not Installed'}
+                {systemInfo.ollama_installed ? 'Installed' : 'Not Installed'}
               </span>
             </div>
           </div>
