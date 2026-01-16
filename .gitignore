@@ -31,3 +31,5 @@ packages/bootstrapper/src-tauri/target/
 
 # Test coverage
 coverage/
+.vercel
+.env*.local
