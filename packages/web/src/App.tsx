@@ -324,14 +324,14 @@ function App() {
           <p>To begin installation, download and open the BrainDrive Bootstrapper:</p>
           <div className="download-buttons">
             <a
-              href="https://github.com/davewaring/BrainDrive-AI-Chat-Installer/releases/download/v0.1.6-alpha/BrainDrive.Installer_0.1.6_aarch64.dmg"
+              href="https://github.com/davewaring/BrainDrive-AI-Chat-Installer/releases/download/v0.1.7-alpha/BrainDrive.Installer_0.1.7_aarch64.dmg"
               className="download-btn"
               download
             >
               Download for macOS
             </a>
             <a
-              href="https://github.com/davewaring/BrainDrive-AI-Chat-Installer/releases/download/v0.1.6-alpha/BrainDrive.Installer_0.1.6_x64-setup.exe"
+              href="https://github.com/davewaring/BrainDrive-AI-Chat-Installer/releases/download/v0.1.7-alpha/BrainDrive.Installer_0.1.7_x64-setup.exe"
               className="download-btn"
               download
             >
