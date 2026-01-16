@@ -22,6 +22,10 @@ const OLLAMA_DEFAULT_PORT: u16 = 11434;
 /// Isolated Miniconda is installed inside the BrainDrive directory
 /// This prevents conflicts with any existing user conda installation
 const ISOLATED_MINICONDA_DIR: &str = "miniconda3";
+const DOWNLOAD_MAX_RETRIES: u8 = 3;
+const DOWNLOAD_RETRY_DELAY_SECS: u64 = 2;
+/// Timeout for establishing HTTP connection (seconds)
+const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 30;
 
 /// Known paths where Ollama might be installed
 /// GUI apps often have minimal PATH, so we check absolute paths directly
@@ -368,16 +372,138 @@ async fn download_file_with_progress(
     sender: Arc<Mutex<Option<WsSender>>>,
     operation: &str,
 ) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .user_agent("BrainDrive-Installer/1.0")
+        .connect_timeout(Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))
+        // Note: No overall timeout set - large downloads (100MB+) need unlimited time
+        // The connect_timeout handles initial connection issues
+        // Streaming errors are handled per-chunk in download_file_with_progress_once
+        .build()
+        .map_err(|e| {
+            let err_msg = format!("Failed to build HTTP client: {}", e);
+            tracing::error!("{}", err_msg);
+            err_msg
+        })?;
+
+    let mut last_error: Option<String> = None;
+
+    for attempt in 1..=DOWNLOAD_MAX_RETRIES {
+        if attempt > 1 {
+            let _ = send_message(&sender, OutgoingMessage::Progress {
+                id: request_id.clone(),
+                operation: operation.to_string(),
+                percent: Some(0),
+                message: format!(
+                    "Retrying download (attempt {} of {})...",
+                    attempt, DOWNLOAD_MAX_RETRIES
+                ),
+                bytes_downloaded: None,
+                bytes_total: None,
+            }).await;
+        }
+
+        match download_file_with_progress_once(
+            &client,
+            url,
+            dest,
+            request_id.clone(),
+            sender.clone(),
+            operation,
+        ).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                tracing::warn!(
+                    "Download attempt {} failed for {}: {}",
+                    attempt, url, e
+                );
+                last_error = Some(e);
+                let _ = std::fs::remove_file(dest);
+                if attempt < DOWNLOAD_MAX_RETRIES {
+                    sleep(Duration::from_secs(DOWNLOAD_RETRY_DELAY_SECS * attempt as u64)).await;
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = send_message(&sender, OutgoingMessage::Progress {
+            id: request_id.clone(),
+            operation: operation.to_string(),
+            percent: Some(0),
+            message: "Retrying download with system curl...".to_string(),
+            bytes_downloaded: None,
+            bytes_total: None,
+        }).await;
+
+        if let Err(curl_err) = download_file_with_curl(url, dest).await {
+            let combined_error = match last_error {
+                Some(err) => format!("{} | curl fallback failed: {}", err, curl_err),
+                None => format!("curl fallback failed: {}", curl_err),
+            };
+            let final_error = format!(
+                "Download failed after {} attempts: {}",
+                DOWNLOAD_MAX_RETRIES,
+                combined_error
+            );
+            tracing::error!("{}", final_error);
+            return Err(final_error);
+        }
+
+        tracing::info!("Download succeeded via curl fallback for {}", url);
+        return Ok(());
+    }
+
+    // Windows-only fallback (no curl available by default)
+    #[cfg(target_os = "windows")]
+    {
+        let last_error = last_error.unwrap_or_else(|| "Unknown download error".to_string());
+        let final_error = format!(
+            "Download failed after {} attempts: {}",
+            DOWNLOAD_MAX_RETRIES, last_error
+        );
+        tracing::error!("{}", final_error);
+        return Err(final_error);
+    }
+
+    // This is unreachable on non-Windows (curl fallback always returns above)
+    // but needed for type checking when cfg doesn't match
+    #[cfg(not(target_os = "windows"))]
+    unreachable!()
+}
+
+async fn download_file_with_progress_once(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &PathBuf,
+    request_id: String,
+    sender: Arc<Mutex<Option<WsSender>>>,
+    operation: &str,
+) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
 
-    let client = reqwest::Client::new();
-    let response = client.get(url)
+    tracing::info!("Starting download from {}", url);
+
+    let response = client
+        .get(url)
         .send()
         .await
-        .map_err(|e| format!("Failed to start download: {}", e))?;
+        .map_err(|e| {
+            // Log detailed error info for debugging
+            let err_msg = format!("Failed to start download from {}: {} (is_timeout={}, is_connect={}, is_request={})",
+                url, e, e.is_timeout(), e.is_connect(), e.is_request());
+            tracing::error!("{}", err_msg);
+            format!("Failed to start download: {}", e)
+        })?;
 
     if !response.status().is_success() {
-        return Err(format!("Download failed with status: {}", response.status()));
+        let err_msg = format!(
+            "Download failed with status: {} ({})",
+            response.status(),
+            url
+        );
+        tracing::error!("{}", err_msg);
+        return Err(err_msg);
     }
 
     let total_size = response.content_length();
@@ -420,6 +546,45 @@ async fn download_file_with_progress(
 
     file.flush().await.map_err(|e| format!("Failed to flush file: {}", e))?;
 
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn download_file_with_curl(url: &str, dest: &PathBuf) -> Result<(), String> {
+    tracing::info!("Attempting curl fallback download from {}", url);
+
+    let output = Command::new("curl")
+        .arg("--fail")
+        .arg("--location")
+        .arg("--show-error")
+        .arg("--connect-timeout")
+        .arg("30")
+        .arg("--max-time")
+        .arg("600")  // 10 minute max for large downloads
+        .arg("--retry")
+        .arg("2")
+        .arg("--output")
+        .arg(dest)
+        .arg(url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| {
+            let err_msg = format!("Failed to run curl: {}", e);
+            tracing::error!("{}", err_msg);
+            err_msg
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let err_msg = format!("curl download failed (exit code {:?}): {}",
+            output.status.code(), stderr.trim());
+        tracing::error!("{}", err_msg);
+        return Err(err_msg);
+    }
+
+    tracing::info!("curl fallback download completed successfully");
     Ok(())
 }
 
