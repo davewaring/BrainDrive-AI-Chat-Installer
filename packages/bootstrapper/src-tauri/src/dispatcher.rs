@@ -16,6 +16,12 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 const DEFAULT_REPO_DIR: &str = "BrainDrive";
 const CONDA_ENV_NAME: &str = "BrainDriveDev";
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
@@ -341,16 +347,22 @@ fn find_conda_binary() -> Option<PathBuf> {
     }
 
     // Fall back to which/where
-    if cfg!(target_os = "windows") {
-        if let Ok(output) = std::process::Command::new("where").arg("conda").output() {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("where");
+        cmd.arg("conda").creation_flags(CREATE_NO_WINDOW);
+        if let Ok(output) = cmd.output() {
             if output.status.success() {
-                let path_str = String::from_utf8_lossy(&output.stdout).lines().next()?.to_string();
-                if !path_str.is_empty() {
-                    return Some(PathBuf::from(path_str));
+                if let Some(path_str) = String::from_utf8_lossy(&output.stdout).lines().next() {
+                    if !path_str.is_empty() {
+                        return Some(PathBuf::from(path_str));
+                    }
                 }
             }
         }
-    } else {
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
         if let Ok(output) = std::process::Command::new("which").arg("conda").output() {
             if output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -710,8 +722,11 @@ fn find_git_binary() -> Option<PathBuf> {
     }
 
     // Fall back to which/where
-    if cfg!(target_os = "windows") {
-        if let Ok(output) = std::process::Command::new("where").arg("git").output() {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("where");
+        cmd.arg("git").creation_flags(CREATE_NO_WINDOW);
+        if let Ok(output) = cmd.output() {
             if output.status.success() {
                 if let Some(first_line) = String::from_utf8_lossy(&output.stdout).lines().next() {
                     if !first_line.is_empty() {
@@ -720,7 +735,9 @@ fn find_git_binary() -> Option<PathBuf> {
                 }
             }
         }
-    } else {
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
         if let Ok(output) = std::process::Command::new("which").arg("git").output() {
             if output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -1053,10 +1070,11 @@ pub async fn install_ollama() -> Result<Value, String> {
 fn get_ollama_version() -> Option<String> {
     let ollama_path = find_ollama_binary()?;
 
-    let output = std::process::Command::new(&ollama_path)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(&ollama_path);
+    cmd.arg("--version");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let output = cmd.output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -2331,6 +2349,7 @@ async fn run_shell_script(script: &str) -> Result<CommandOutput, String> {
 async fn run_shell_script(script: &str) -> Result<CommandOutput, String> {
     let mut command = Command::new("cmd.exe");
     command.arg("/C").arg(script);
+    command.creation_flags(CREATE_NO_WINDOW);
     run_command(command).await
 }
 
@@ -2379,15 +2398,18 @@ fn ensure_command_available(cmd: &str) -> Result<(), String> {
 
 fn command_exists(cmd: &str) -> bool {
     use std::process::Command as StdCommand;
-    if cfg!(target_os = "windows") {
-        StdCommand::new("where")
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = StdCommand::new("where");
+        command
             .arg(cmd)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    } else {
+            .creation_flags(CREATE_NO_WINDOW);
+        command.status().map(|s| s.success()).unwrap_or(false)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
         StdCommand::new("which")
             .arg(cmd)
             .stdout(Stdio::null())

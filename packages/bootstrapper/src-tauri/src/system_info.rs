@@ -5,6 +5,20 @@ use std::path::PathBuf;
 use std::process::Command;
 use sysinfo::{Disks, System};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+/// Create a Command that won't show a console window on Windows
+fn silent_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 const OLLAMA_DEFAULT_PORT: u16 = 11434;
 
 /// Known paths where Ollama might be installed
@@ -97,7 +111,7 @@ fn find_ollama_binary() -> Option<PathBuf> {
     // Fall back to which/where
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(output) = Command::new("which").arg("ollama").output() {
+        if let Ok(output) = silent_command("which").arg("ollama").output() {
             if output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path_str.is_empty() {
@@ -109,7 +123,7 @@ fn find_ollama_binary() -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = Command::new("where").arg("ollama").output() {
+        if let Ok(output) = silent_command("where").arg("ollama").output() {
             if output.status.success() {
                 if let Some(first_line) = String::from_utf8_lossy(&output.stdout).lines().next() {
                     if !first_line.is_empty() {
@@ -228,7 +242,7 @@ fn detect_gpus() -> Vec<GpuInfo> {
 
 #[cfg(target_os = "macos")]
 fn detect_macos_gpus() -> Vec<GpuInfo> {
-    let output = Command::new("system_profiler")
+    let output = silent_command("system_profiler")
         .args(["SPDisplaysDataType", "-json"])
         .output();
 
@@ -272,7 +286,7 @@ fn detect_windows_gpus() -> Vec<GpuInfo> {
     let script =
         "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM | ConvertTo-Json";
 
-    let output = Command::new("powershell.exe")
+    let output = silent_command("powershell.exe")
         .args(["-NoProfile", "-Command", script])
         .output();
 
@@ -333,7 +347,7 @@ fn parse_vram_string(input: &str) -> Option<f64> {
 
 /// Get Ollama version string using absolute path (e.g., "0.1.17")
 fn get_ollama_version_from_path(ollama_path: &PathBuf) -> Option<String> {
-    let output = Command::new(ollama_path)
+    let output = silent_command(ollama_path)
         .arg("--version")
         .output()
         .ok()?;
