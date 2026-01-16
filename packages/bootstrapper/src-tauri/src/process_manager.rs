@@ -116,34 +116,45 @@ pub fn find_pid_on_port(port: u16) -> Option<u32> {
     None
 }
 
-/// Kill a process by PID
+/// Kill a process by PID, including all child processes in its process group
 #[cfg(unix)]
 pub fn kill_process(pid: u32) -> bool {
     use std::process::Command as StdCommand;
 
-    // First try SIGTERM for graceful shutdown
+    // First try SIGTERM to the process group for graceful shutdown
+    // Using negative PID sends signal to the entire process group
     let term_result = StdCommand::new("kill")
+        .args(["-TERM", &format!("-{}", pid)])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    // Also try killing the individual process in case it's not a process group leader
+    let _ = StdCommand::new("kill")
         .args(["-TERM", &pid.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
 
-    if term_result.map(|s| s.success()).unwrap_or(false) {
-        // Give process time to terminate gracefully
-        std::thread::sleep(std::time::Duration::from_millis(500));
+    // Give processes time to terminate gracefully
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
-        // Check if still running, if so use SIGKILL
-        if is_pid_running(pid) {
-            let _ = StdCommand::new("kill")
-                .args(["-KILL", &pid.to_string()])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-        true
-    } else {
-        false
+    // Check if still running, if so use SIGKILL on both group and process
+    if is_pid_running(pid) {
+        let _ = StdCommand::new("kill")
+            .args(["-KILL", &format!("-{}", pid)])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = StdCommand::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
+
+    // Return true if we sent the signal (even if process was already dead)
+    term_result.map(|s| s.success()).unwrap_or(false) || !is_pid_running(pid)
 }
 
 #[cfg(windows)]
@@ -160,13 +171,28 @@ pub fn kill_process(pid: u32) -> bool {
 }
 
 /// Kill any process listening on a port
+/// Retries up to 3 times to handle parent/child process hierarchies
 pub fn kill_process_on_port(port: u16) -> bool {
-    if let Some(pid) = find_pid_on_port(port) {
-        kill_process(pid)
-    } else {
-        // No process on port, consider it a success
-        true
+    for attempt in 0..3 {
+        if let Some(pid) = find_pid_on_port(port) {
+            kill_process(pid);
+            // Wait a bit for the port to be freed
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            // Check if port is now free
+            if find_pid_on_port(port).is_none() {
+                return true;
+            }
+            // Port still in use, might be a child process - try again
+            if attempt < 2 {
+                continue;
+            }
+        } else {
+            // No process on port, success
+            return true;
+        }
     }
+    // After 3 attempts, check one more time
+    find_pid_on_port(port).is_none()
 }
 
 /// Check if a port has a listening process that is accepting connections

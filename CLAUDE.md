@@ -54,11 +54,13 @@ npm run dev                      # Start with --watch
 cd packages/web
 npm run dev                      # Vite dev server on :5174
 
-# Bootstrapper
+# Bootstrapper (IMPORTANT: set backend URL for local dev)
 cd packages/bootstrapper
-npm run tauri:dev                # Tauri dev mode
+BRAINDRIVE_BACKEND_URL=ws://localhost:3000 npm run tauri:dev
 cargo check                      # Check Rust compiles (from src-tauri/)
 ```
+
+**Important:** The bootstrapper defaults to the production backend URL. For local development, you MUST set `BRAINDRIVE_BACKEND_URL=ws://localhost:3000` or the bootstrapper will connect to production instead of your local backend.
 
 ## Implementation Status
 
@@ -70,15 +72,18 @@ cargo check                      # Check Rust compiles (from src-tauri/)
 - [x] Web chat UI
 - [x] Basic Start/Stop/Restart UI
 
-### Phase 2: System Detection & Tools (Pending)
-- [ ] Implement actual command execution in Rust
-- [ ] Port availability checking
-- [ ] Conda environment creation
-- [ ] Git clone operations
+### Phase 2: System Detection & Tools (Complete)
+- [x] Implement actual command execution in Rust
+- [x] Port availability checking (IPv4 + IPv6)
+- [x] Conda environment creation (isolated to ~/BrainDrive/miniconda3)
+- [x] Git clone operations
+- [x] Parallel dependency installation (install_all_deps)
+- [x] Process lifecycle management (start/stop/restart with PID tracking)
 
-### Phase 3: Ollama + Offline Model (Pending)
-- [ ] Ollama detection and installation
-- [ ] Model pulling with progress
+### Phase 3: Ollama + Offline Model (Nearly Complete)
+- [x] Ollama detection and installation guidance
+- [x] Model pulling with progress streaming
+- [x] Full installation flow verified (January 16, 2026)
 - [ ] Hardware-based model recommendations
 
 ### Phase 4-7: See plan.md in BrainDrive-Planning repo

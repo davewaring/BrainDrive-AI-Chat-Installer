@@ -184,9 +184,13 @@ pub fn run() {
 
     tracing::info!("BrainDrive Installer starting");
 
+    // Create app state and keep a clone of process_state for the exit handler
+    let app_state = AppState::default();
+    let exit_process_state = app_state.process_state.clone();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(AppState::default())
+        .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_connection_status,
             connect_to_backend,
@@ -200,6 +204,26 @@ pub fn run() {
             get_recent_logs,
             get_log_directory,
         ])
+        .on_window_event(move |_window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                tracing::info!("Window close requested, stopping BrainDrive processes");
+
+                // Clone the process_state for the async block
+                let process_state = exit_process_state.clone();
+
+                // Stop BrainDrive processes synchronously before exit
+                tauri::async_runtime::block_on(async move {
+                    match dispatcher::stop_braindrive(&process_state).await {
+                        Ok(result) => {
+                            tracing::info!(result = %result, "BrainDrive stopped on exit");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to stop BrainDrive on exit");
+                        }
+                    }
+                });
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
