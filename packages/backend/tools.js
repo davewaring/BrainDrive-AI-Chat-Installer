@@ -221,7 +221,7 @@ export const TOOLS = [
   },
   {
     name: 'start_braindrive',
-    description: 'Start the BrainDrive backend and frontend services. Requires explicit user confirmation. Use this after installation is complete.',
+    description: 'Start the BrainDrive backend and frontend services. Use this after installation is complete.',
     input_schema: {
       type: 'object',
       properties: {
@@ -232,10 +232,6 @@ export const TOOLS = [
         backend_port: {
           type: 'integer',
           description: 'Port for the backend (default: 8005)',
-        },
-        confirmed: {
-          type: 'boolean',
-          description: 'Set to true only after the user confirms they want to start BrainDrive.',
         },
       },
       required: [],

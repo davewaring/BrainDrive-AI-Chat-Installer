@@ -115,7 +115,7 @@ When detect_system shows BrainDrive is already installed (conda_installed=true, 
 
 ## Tool Behavior Notes
 - \`install_conda\`: Downloads and installs Miniconda to ~/BrainDrive/miniconda3 (isolated installation). Returns success with \`already_installed: true\` if the isolated conda is already present. Git and Node are installed via conda env, not separately.
-- \`start_braindrive\`: Automatically finds available ports if defaults are taken. Returns success if already running. Requires explicit user confirmation; include \`confirmed: true\` only after the user approves.
+- \`start_braindrive\`: Automatically finds available ports if defaults are taken. Returns success if already running.
 - \`clone_repo\`: Returns success with \`already_exists: true\` if repo exists. Uses git from the conda environment.
 - \`create_conda_env\`: Creates env with Python 3.11, nodejs, and git from conda-forge. Returns success with \`already_exists: true\` if env exists. Use force_recreate=true if npm/node is missing.
 - \`install_all_deps\`: Runs backend and frontend dependency installation IN PARALLEL. Returns detailed results for both. Preferred over separate install_backend_deps + install_frontend_deps calls. Uses npm from the conda environment.
@@ -534,9 +534,6 @@ export class ClaudeClient {
         case 'start_braindrive':
           if (!this.hub.isBootstrapperConnected()) {
             return { error: 'Bootstrapper not connected' };
-          }
-          if (!input.confirmed) {
-            return { error: 'User confirmation required before starting BrainDrive.' };
           }
           const startResult = await this.hub.callBootstrapperTool('start_braindrive', {
             frontend_port: input.frontend_port || 5173,
