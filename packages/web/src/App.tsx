@@ -20,6 +20,12 @@ interface ProgressInfo {
   bytesTotal: number | null;
 }
 
+interface OllamaInstallPrompt {
+  downloadUrl: string;
+  instructions: string;
+  message: string;
+}
+
 type ServerMessage =
   | { type: 'status_update'; bootstrapper_connected: boolean }
   | { type: 'ai_message'; content: string }
@@ -30,6 +36,8 @@ type ServerMessage =
   | { type: 'tool_executing'; tool: string }
   | { type: 'command_output'; output: string }
   | { type: 'progress'; id: string; operation: string; percent?: number; message: string; bytes_downloaded?: number; bytes_total?: number }
+  | { type: 'ollama_install_required'; download_url?: string; instructions?: string; message?: string }
+  | { type: 'ollama_install_cleared' }
   | { type: 'error'; message: string }
   | { type: string; [key: string]: unknown };
 
@@ -48,6 +56,7 @@ function App() {
   const [bootstrapperConnected, setBootstrapperConnected] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [activeProgress, setActiveProgress] = useState<ProgressInfo | null>(null);
+  const [ollamaInstallPrompt, setOllamaInstallPrompt] = useState<OllamaInstallPrompt | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingMessageIdRef = useRef<string | null>(null);
@@ -181,6 +190,23 @@ function App() {
         break;
       }
 
+      case 'ollama_install_required': {
+        const downloadUrl = typeof data.download_url === 'string' ? data.download_url : 'https://ollama.com/download';
+        const instructions = typeof data.instructions === 'string' ? data.instructions : '';
+        const message = typeof data.message === 'string' ? data.message : 'Please install Ollama to continue.';
+        setOllamaInstallPrompt({
+          downloadUrl,
+          instructions: instructions || message,
+          message,
+        });
+        break;
+      }
+
+      case 'ollama_install_cleared': {
+        setOllamaInstallPrompt(null);
+        break;
+      }
+
       case 'error': {
         addMessage('system', `Error: ${String(data.message ?? 'Unknown error')}`);
         break;
@@ -199,7 +225,7 @@ function App() {
 
     ws.onopen = () => {
       setConnectionStatus('connected');
-      ws.send(JSON.stringify({ type: 'browser_connect' }));
+      ws.send(JSON.stringify({ type: 'browser_connect', reset: true }));
       addMessage('system', 'Connected to BrainDrive Installation Server. You can start chatting now!');
     };
 
@@ -238,20 +264,27 @@ function App() {
     };
   }, [connectToBackend]);
 
-  const sendMessage = () => {
-    if (!input.trim() || !wsRef.current || connectionStatus !== 'connected') {
+  const sendMessageContent = useCallback((content: string) => {
+    if (!content.trim() || !wsRef.current || connectionStatus !== 'connected') {
       return;
     }
 
-    const content = input.trim();
     addMessage('user', content);
-    setInput('');
 
     wsRef.current.send(JSON.stringify({
       type: 'user_message',
       content,
     }));
-  };
+  }, [addMessage, connectionStatus]);
+
+  const sendMessage = useCallback(() => {
+    const content = input.trim();
+    if (!content) {
+      return;
+    }
+    sendMessageContent(content);
+    setInput('');
+  }, [input, sendMessageContent]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -301,6 +334,32 @@ function App() {
               Windows (Coming Soon)
             </button>
           </div>
+        </div>
+      )}
+
+      {ollamaInstallPrompt && (
+        <div className="action-banner">
+          <h3>Install Ollama to continue</h3>
+          <p>{ollamaInstallPrompt.message}</p>
+          <div className="action-buttons">
+            <a
+              href={ollamaInstallPrompt.downloadUrl}
+              className="download-btn"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open Download Page
+            </a>
+            <button
+              className="download-btn secondary"
+              onClick={() => sendMessageContent('I finished installing Ollama.')}
+              disabled={connectionStatus !== 'connected'}
+            >
+              I installed Ollama
+            </button>
+          </div>
+          <div className="action-details">{ollamaInstallPrompt.instructions}</div>
+          <p className="action-footer">When you are done, click "I installed Ollama" or send a message here.</p>
         </div>
       )}
 

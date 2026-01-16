@@ -59,7 +59,7 @@ export const TOOLS = [
   },
   {
     name: 'install_ollama',
-    description: 'Check if Ollama is installed and start it if needed. If Ollama is not installed, returns manual installation instructions with download link. If installed but not running, starts the service automatically. Use this to ensure Ollama is ready before pulling models.',
+    description: 'Check if Ollama is installed and start it if needed. If Ollama is not installed, returns manual installation instructions with a download link. After the user finishes the install, call this again to detect and start the service. Use this to ensure Ollama is ready before pulling models.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -77,13 +77,17 @@ export const TOOLS = [
   },
   {
     name: 'pull_ollama_model',
-    description: 'Download an audited Ollama model (e.g., qwen2.5:1.5b).',
+    description: 'Download an audited Ollama model (e.g., qwen2.5:1.5b). Requires explicit user confirmation before calling.',
     input_schema: {
       type: 'object',
       properties: {
         model: {
           type: 'string',
           description: 'Model identifier to pull (letters, numbers, dots, :, /, -, _)',
+        },
+        confirmed: {
+          type: 'boolean',
+          description: 'Set to true only after the user explicitly approves the download.',
         },
         registry: {
           type: 'string',
@@ -217,7 +221,7 @@ export const TOOLS = [
   },
   {
     name: 'start_braindrive',
-    description: 'Start the BrainDrive backend and frontend services. Use this after installation is complete.',
+    description: 'Start the BrainDrive backend and frontend services. Requires explicit user confirmation. Use this after installation is complete.',
     input_schema: {
       type: 'object',
       properties: {
@@ -228,6 +232,10 @@ export const TOOLS = [
         backend_port: {
           type: 'integer',
           description: 'Port for the backend (default: 8005)',
+        },
+        confirmed: {
+          type: 'boolean',
+          description: 'Set to true only after the user confirms they want to start BrainDrive.',
         },
       },
       required: [],

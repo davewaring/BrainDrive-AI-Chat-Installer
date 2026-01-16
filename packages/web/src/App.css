@@ -123,6 +123,61 @@
   background: #4b5563;
 }
 
+/* Action Banner */
+.action-banner {
+  padding: 1.25rem 1.5rem;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(59, 130, 246, 0.12));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  text-align: center;
+}
+
+.action-banner h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  color: #d1fae5;
+}
+
+.action-banner p {
+  margin: 0.25rem 0;
+  color: #d1d5db;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 0.75rem 0;
+}
+
+.download-btn.secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.download-btn.secondary:hover:not(:disabled) {
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+}
+
+.action-details {
+  margin: 0.5rem auto 0;
+  max-width: 640px;
+  text-align: left;
+  white-space: pre-wrap;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  color: #e5e7eb;
+  font-size: 0.875rem;
+}
+
+.action-footer {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  color: #9ca3af;
+}
+
 /* Chat Container */
 .chat-container {
   flex: 1;

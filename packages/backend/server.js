@@ -51,6 +51,11 @@ wss.on('connection', (ws) => {
 
       // Identify client type on first message
       if (message.type === 'browser_connect') {
+        // Always reset session on new browser connection to ensure fresh state
+        // This prevents stale systemInfo or conversation history from affecting the flow
+        session.reset();
+        console.log('Session reset for new browser connection');
+
         hub.setBrowserSocket(ws);
         ws.send(JSON.stringify({
           type: 'status_update',
