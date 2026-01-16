@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schemas.tauri.app/2/capability",
+  "identifier": "default",
+  "description": "Default capabilities for the BrainDrive Installer",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "shell:allow-open"
+  ]
+}

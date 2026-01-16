@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Default capabilities for the BrainDrive Installer","local":true,"windows":["main"],"permissions":["core:default","core:event:default","shell:allow-open"]}}
