@@ -330,9 +330,13 @@ function App() {
             >
               Download for macOS
             </a>
-            <button className="download-btn" disabled>
-              Windows (Coming Soon)
-            </button>
+            <a
+              href="https://github.com/davewaring/BrainDrive-AI-Chat-Installer/releases/download/v0.1.4-alpha/BrainDrive.Installer_0.1.4_x64-setup.exe"
+              className="download-btn"
+              download
+            >
+              Download for Windows
+            </a>
           </div>
         </div>
       )}
