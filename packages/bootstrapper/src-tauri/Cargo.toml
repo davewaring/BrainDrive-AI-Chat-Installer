@@ -1,6 +1,6 @@
 [package]
 name = "braindrive-bootstrapper"
-version = "0.1.0"
+version = "0.1.1"
 description = "BrainDrive AI Chat Installer Bootstrapper"
 authors = ["BrainDrive"]
 edition = "2021"
