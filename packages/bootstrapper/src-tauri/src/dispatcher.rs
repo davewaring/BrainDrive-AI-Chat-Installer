@@ -1588,9 +1588,15 @@ pub async fn install_backend_deps(
 }
 
 /// Install frontend npm dependencies
-pub async fn install_frontend_deps(repo_path: Option<String>) -> Result<Value, String> {
-    ensure_command_available("npm")?;
+pub async fn install_frontend_deps(
+    env_name: Option<String>,
+    repo_path: Option<String>,
+) -> Result<Value, String> {
+    // Get the conda binary path (prefers isolated installation)
+    let conda_path = find_conda_binary()
+        .ok_or("Conda is not installed. Please install it first using the install_conda tool.")?;
 
+    let env = sanitize_env_name(&env_name.unwrap_or_else(|| CONDA_ENV_NAME.to_string()))?;
     let repo = resolve_repo_path_or_default(repo_path)?;
     let frontend_path = repo.join("frontend");
 
@@ -1609,19 +1615,26 @@ pub async fn install_frontend_deps(repo_path: Option<String>) -> Result<Value, S
         ));
     }
 
-    let mut command = Command::new("npm");
-    command
-        .arg("install")
-        .current_dir(&frontend_path);
+    let npm_cmd = if cfg!(target_os = "windows") {
+        format!(
+            "cmd /C \"cd /d {} && npm install\"",
+            frontend_path.display()
+        )
+    } else {
+        format!("cd \"{}\" && npm install", frontend_path.display())
+    };
+    let full_cmd = process_manager::conda_run_command_with_path(&conda_path, &env, &npm_cmd);
 
-    let result = run_command(command).await?;
+    let result = run_shell_script(&full_cmd).await?;
 
     Ok(json!({
         "success": result.success,
         "exit_code": result.exit_code,
         "stdout": result.stdout,
         "stderr": result.stderr,
-        "frontend_path": frontend_path.to_string_lossy()
+        "frontend_path": frontend_path.to_string_lossy(),
+        "env_name": env,
+        "conda_path": conda_path.to_string_lossy()
     }))
 }
 
@@ -1633,13 +1646,14 @@ pub async fn install_all_deps(
 ) -> Result<Value, String> {
     // Clone the values for the parallel tasks
     let env_name_backend = env_name.clone();
+    let env_name_frontend = env_name.clone();
     let repo_path_backend = repo_path.clone();
     let repo_path_frontend = repo_path;
 
     // Run both installations in parallel
     let (backend_result, frontend_result) = tokio::join!(
         install_backend_deps(env_name_backend, repo_path_backend),
-        install_frontend_deps(repo_path_frontend)
+        install_frontend_deps(env_name_frontend, repo_path_frontend)
     );
 
     // Process results
@@ -2076,13 +2090,17 @@ uvicorn main:app --host 0.0.0.0 --port {}
 #[cfg(not(target_os = "windows"))]
 async fn start_frontend_service(frontend_path: &PathBuf, port: u16) -> Result<Option<u32>, String> {
     // Create a shell script to run the frontend
+    let conda_activate = process_manager::conda_run_command(CONDA_ENV_NAME, "true")
+        .replace(" true", "");
     let script_content = format!(
         r#"#!/bin/bash
 set -e
 cd "{}"
+{}
 exec npm run dev -- --host localhost --port {}
 "#,
         frontend_path.display(),
+        conda_activate,
         port
     );
 
@@ -2122,9 +2140,11 @@ async fn start_frontend_service(frontend_path: &PathBuf, port: u16) -> Result<Op
     let script_content = format!(
         r#"@echo off
 cd /d "{}"
+call conda activate {}
 npm run dev -- --host localhost --port {}
 "#,
         frontend_path.display(),
+        CONDA_ENV_NAME,
         port
     );
 

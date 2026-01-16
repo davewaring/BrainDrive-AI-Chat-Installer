@@ -167,10 +167,14 @@ export const TOOLS = [
   },
   {
     name: 'install_frontend_deps',
-    description: 'Install frontend npm dependencies. Run this after cloning the repo.',
+    description: 'Install frontend npm dependencies using npm from the conda environment. Run this after cloning the repo.',
     input_schema: {
       type: 'object',
       properties: {
+        env_name: {
+          type: 'string',
+          description: 'Conda environment name (defaults to BrainDriveDev)',
+        },
         repo_path: {
           type: 'string',
           description: 'Path to the BrainDrive repo (defaults to ~/BrainDrive)',

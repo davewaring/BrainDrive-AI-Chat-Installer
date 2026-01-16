@@ -82,6 +82,8 @@ pub enum IncomingMessage {
     InstallFrontendDeps {
         id: String,
         #[serde(default)]
+        env_name: Option<String>,
+        #[serde(default)]
         repo_path: Option<String>,
     },
 
@@ -363,9 +365,13 @@ async fn handle_incoming_message(
             send_tool_result(sender, id, result).await;
         }
 
-        IncomingMessage::InstallFrontendDeps { id, repo_path } => {
+        IncomingMessage::InstallFrontendDeps {
+            id,
+            env_name,
+            repo_path,
+        } => {
             app.emit("command-executing", "Installing frontend dependencies").ok();
-            let result = dispatcher::install_frontend_deps(repo_path).await;
+            let result = dispatcher::install_frontend_deps(env_name, repo_path).await;
             send_tool_result(sender, id, result).await;
         }
 

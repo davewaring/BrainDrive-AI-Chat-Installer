@@ -291,7 +291,7 @@ function App() {
           <p>To begin installation, download and open the BrainDrive Bootstrapper:</p>
           <div className="download-buttons">
             <a
-              href="https://github.com/davewaring/BrainDrive-AI-Chat-Installer/releases/download/v0.1.2-alpha/BrainDrive.Installer_0.1.2_aarch64.dmg"
+              href="https://github.com/davewaring/BrainDrive-AI-Chat-Installer/releases/download/v0.1.3-alpha/BrainDrive.Installer_0.1.3_aarch64.dmg"
               className="download-btn"
               download
             >

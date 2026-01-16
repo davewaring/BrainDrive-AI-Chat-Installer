@@ -390,6 +390,12 @@ export class ClaudeClient {
             return { error: 'Bootstrapper not connected' };
           }
           const payload = {};
+          if (input.env_name) {
+            if (!/^[A-Za-z0-9_-]+$/.test(input.env_name)) {
+              return { error: 'Environment name may only include letters, numbers, "-", and "_"' };
+            }
+            payload.env_name = input.env_name;
+          }
           if (input.repo_path) {
             payload.repo_path = input.repo_path;
           }
