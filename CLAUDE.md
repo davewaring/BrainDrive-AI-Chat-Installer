@@ -1,5 +1,42 @@
 # Claude Code Context: BrainDrive AI Chat Installer
 
+## Current Status
+
+| Field | Value |
+|-------|-------|
+| **Version** | v0.1.4-alpha |
+| **Phase** | 3 (Ollama + Offline Model) - nearly complete |
+| **Branch** | `feature-audited-helpers` |
+| **Last Verified** | January 16, 2026 - full e2e install working |
+
+### Planning Docs
+
+Full roadmap, specs, and transcripts are in the planning repo:
+- **Main plan:** `~/BrainDrive-Planning/plans/active/ai-installer/plan.md` (comprehensive, 1000+ lines)
+- **Feature spec:** `~/BrainDrive-Planning/plans/active/ai-installer/feature-spec.md`
+- **Deployment:** `~/BrainDrive-Planning/plans/active/ai-installer/deployment-plan.md`
+
+### What's Done
+- Isolated Miniconda installation (`~/BrainDrive/miniconda3`)
+- Parallel dependency installation (`install_all_deps`)
+- Ollama detection + progress streaming
+- Process cleanup on app close
+- Full installation flow: detect → install_conda → clone → create_env → install_deps → setup_env → start
+
+### What's Next (Phase 3 Remaining)
+- [ ] Hardware-based Qwen model recommendations
+- [ ] Model checksum verification after download
+- [ ] Claude outage contingency (fallback state machine)
+- [ ] Update helpers: `check_for_updates`, `update_braindrive_services`, `update_conda_env`
+
+### Future Phases
+- **Phase 4:** Default user creation, Check for Updates UI
+- **Phase 5:** Reliability (retry flows, log viewer, macOS notarization)
+- **Phase 6:** Windows build + signing + QA
+- **Phase 7:** Launch readiness
+
+---
+
 ## Project Overview
 
 This is a chat-based AI installer for BrainDrive. Users visit a web page, chat with Claude, and Claude orchestrates the installation through a local bootstrapper app.
@@ -64,29 +101,7 @@ cargo check                      # Check Rust compiles (from src-tauri/)
 
 ## Implementation Status
 
-### Phase 1: Foundation (Complete)
-- [x] Tauri project setup with React
-- [x] WebSocket client in Rust
-- [x] System detection (OS, conda, git, node, ollama)
-- [x] Backend with Claude integration
-- [x] Web chat UI
-- [x] Basic Start/Stop/Restart UI
-
-### Phase 2: System Detection & Tools (Complete)
-- [x] Implement actual command execution in Rust
-- [x] Port availability checking (IPv4 + IPv6)
-- [x] Conda environment creation (isolated to ~/BrainDrive/miniconda3)
-- [x] Git clone operations
-- [x] Parallel dependency installation (install_all_deps)
-- [x] Process lifecycle management (start/stop/restart with PID tracking)
-
-### Phase 3: Ollama + Offline Model (Nearly Complete)
-- [x] Ollama detection and installation guidance
-- [x] Model pulling with progress streaming
-- [x] Full installation flow verified (January 16, 2026)
-- [ ] Hardware-based model recommendations
-
-### Phase 4-7: See plan.md in BrainDrive-Planning repo
+See "Current Status" section at top for latest. Full details in `~/BrainDrive-Planning/plans/active/ai-installer/plan.md`.
 
 ## Code Patterns
 
@@ -137,5 +152,6 @@ Currently manual testing only. To test:
 
 ## Related Repos
 
-- **BrainDrive-Core**: The main BrainDrive application being installed
-- **BrainDrive-Planning**: Planning docs, feature specs, meeting transcripts
+- **BrainDrive-Planning** (`~/BrainDrive-Planning`): Planning docs, feature specs, meeting transcripts
+  - AI Installer plan: `plans/active/ai-installer/plan.md`
+- **BrainDrive** (`~/BrainDrive`): The main BrainDrive application being installed
