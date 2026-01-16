@@ -10,7 +10,7 @@ export const TOOLS = [
   },
   {
     name: 'detect_system',
-    description: 'Detect the user\'s system information including OS, architecture, hardware (CPU, RAM, GPU, disk), and installed software (conda, git, node, ollama). For Ollama: returns whether installed, whether running (port 11434), and version. Use this early in the conversation to understand what needs to be installed.',
+    description: 'Detect the user\'s system information including OS, architecture, hardware (CPU, RAM, GPU, disk), and installation status. Returns: conda_installed (isolated miniconda at ~/BrainDrive/miniconda3), braindrive_env_ready (conda env with python/node/git exists), braindrive_exists (repo cloned), ollama_installed, ollama_running. Use this early in the conversation to understand what needs to be installed.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -28,7 +28,7 @@ export const TOOLS = [
   },
   {
     name: 'install_git',
-    description: 'Install Git automatically if not already installed. On macOS, triggers the Xcode Command Line Tools installation (native GUI dialog - user just clicks Install). On Windows, downloads and runs the Git installer silently. On Linux, returns instructions for manual installation (requires sudo). Use this when detect_system shows git_installed is false.',
+    description: 'DEPRECATED: Git is now included in the conda environment. Only use this if you need system git before conda is installed. On macOS, triggers Xcode CLI tools dialog. On Windows, downloads installer silently.',
     input_schema: {
       type: 'object',
       properties: {},
@@ -131,13 +131,17 @@ export const TOOLS = [
   },
   {
     name: 'create_conda_env',
-    description: 'Create a new conda environment with Python 3.11, Node.js, and git. Use this before installing dependencies.',
+    description: 'Create a new conda environment with Python 3.11, Node.js, and git from conda-forge. Use this before installing dependencies. If npm/node is missing after creation, use force_recreate=true to recreate the environment properly.',
     input_schema: {
       type: 'object',
       properties: {
         env_name: {
           type: 'string',
           description: 'Name for the conda environment (defaults to BrainDriveDev)',
+        },
+        force_recreate: {
+          type: 'boolean',
+          description: 'If true, removes existing environment and creates fresh one. Use this if the existing env is missing nodejs or other required packages.',
         },
       },
       required: [],

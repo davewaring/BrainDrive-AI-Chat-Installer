@@ -65,6 +65,8 @@ pub enum IncomingMessage {
         id: String,
         #[serde(default)]
         env_name: Option<String>,
+        #[serde(default)]
+        force_recreate: Option<bool>,
     },
 
     #[serde(rename = "install_backend_deps")]
@@ -345,9 +347,9 @@ async fn handle_incoming_message(
             send_tool_result(sender, id, result).await;
         }
 
-        IncomingMessage::CreateCondaEnv { id, env_name } => {
+        IncomingMessage::CreateCondaEnv { id, env_name, force_recreate } => {
             app.emit("command-executing", "Creating Conda environment").ok();
-            let result = dispatcher::create_conda_env(env_name).await;
+            let result = dispatcher::create_conda_env(env_name, force_recreate).await;
             send_tool_result(sender, id, result).await;
         }
 

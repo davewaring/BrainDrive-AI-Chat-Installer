@@ -1567,12 +1567,14 @@ pub async fn setup_env_file(repo_path: Option<String>) -> Result<Value, String> 
 
 /// Create a new conda environment for BrainDrive
 /// Uses the isolated conda installation at ~/BrainDrive/miniconda3
-pub async fn create_conda_env(env_name: Option<String>) -> Result<Value, String> {
+/// If force_recreate is true, removes existing env and creates fresh one
+pub async fn create_conda_env(env_name: Option<String>, force_recreate: Option<bool>) -> Result<Value, String> {
     // Get the conda binary path (prefers isolated installation)
     let conda_path = find_conda_binary()
         .ok_or("Conda is not installed. Please install it first using the install_conda tool.")?;
 
     let env = sanitize_env_name(&env_name.unwrap_or_else(|| CONDA_ENV_NAME.to_string()))?;
+    let force = force_recreate.unwrap_or(false);
 
     // Check if environment already exists
     let check_cmd = Command::new(&conda_path)
@@ -1584,13 +1586,25 @@ pub async fn create_conda_env(env_name: Option<String>) -> Result<Value, String>
         .map_err(|e| format!("Failed to list conda environments: {}", e))?;
 
     let env_list = String::from_utf8_lossy(&check_cmd.stdout);
-    if env_list.lines().any(|line| line.split_whitespace().next() == Some(&env)) {
+    let env_exists = env_list.lines().any(|line| line.split_whitespace().next() == Some(&env));
+
+    if env_exists && !force {
         return Ok(json!({
             "success": true,
             "message": format!("Conda environment '{}' already exists", env),
             "env_name": env,
             "already_exists": true
         }));
+    }
+
+    // If force_recreate and env exists, remove it first
+    if env_exists && force {
+        let mut remove_cmd = Command::new(&conda_path);
+        remove_cmd.args(["env", "remove", "-n", &env, "-y"]);
+        let remove_result = run_command(remove_cmd).await?;
+        if !remove_result.success {
+            return Err(format!("Failed to remove existing environment: {}", remove_result.stderr));
+        }
     }
 
     // Create the environment with Python 3.11, nodejs, and git from conda-forge
@@ -1614,7 +1628,8 @@ pub async fn create_conda_env(env_name: Option<String>) -> Result<Value, String>
         "stdout": result.stdout,
         "stderr": result.stderr,
         "env_name": env,
-        "conda_path": conda_path.to_string_lossy()
+        "conda_path": conda_path.to_string_lossy(),
+        "recreated": force && env_exists
     }))
 }
 
