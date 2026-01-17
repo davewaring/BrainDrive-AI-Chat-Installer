@@ -2127,14 +2127,17 @@ exec uvicorn main:app --host 0.0.0.0 --port {}
 /// Start the backend service on Windows
 #[cfg(target_os = "windows")]
 async fn start_backend_service(backend_path: &PathBuf, port: u16) -> Result<Option<u32>, String> {
+    let conda_path = find_conda_binary()
+        .ok_or("Conda is not installed. Please install it first using the install_conda tool.")?;
+
     // Create a batch script to run the backend with conda
     let script_content = format!(
         r#"@echo off
 cd /d "{}"
-call conda activate {}
-uvicorn main:app --host 0.0.0.0 --port {}
+"{}" run -n {} python -m uvicorn main:app --host 0.0.0.0 --port {}
 "#,
         backend_path.display(),
+        conda_path.display(),
         CONDA_ENV_NAME,
         port
     );
@@ -2214,14 +2217,17 @@ exec npm run dev -- --host localhost --port {}
 /// Start the frontend service on Windows
 #[cfg(target_os = "windows")]
 async fn start_frontend_service(frontend_path: &PathBuf, port: u16) -> Result<Option<u32>, String> {
+    let conda_path = find_conda_binary()
+        .ok_or("Conda is not installed. Please install it first using the install_conda tool.")?;
+
     // Create a batch script to run the frontend
     let script_content = format!(
         r#"@echo off
 cd /d "{}"
-call conda activate {}
-npm run dev -- --host localhost --port {}
+"{}" run -n {} npm run dev -- --host localhost --port {}
 "#,
         frontend_path.display(),
+        conda_path.display(),
         CONDA_ENV_NAME,
         port
     );
