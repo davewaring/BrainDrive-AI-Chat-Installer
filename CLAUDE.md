@@ -99,6 +99,13 @@ cargo check                      # Check Rust compiles (from src-tauri/)
 
 **Important:** The bootstrapper defaults to the production backend URL. For local development, you MUST set `BRAINDRIVE_BACKEND_URL=ws://localhost:3000` or the bootstrapper will connect to production instead of your local backend.
 
+## Windows Uninstall Shortcut
+
+If the Windows installer says a previous install exists but the folder is hidden, uninstall directly with:
+```
+& "C:\Users\david\AppData\Local\BrainDrive Installer\uninstall.exe"
+```
+
 ## Implementation Status
 
 See "Current Status" section at top for latest. Full details in `~/BrainDrive-Planning/plans/active/ai-installer/plan.md`.
